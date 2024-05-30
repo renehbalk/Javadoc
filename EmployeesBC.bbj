@@ -1,0 +1,1466 @@
+0010 REM /**
+0020 REM  * EmployeesBC.bbj
+0030 REM  * @author kChavan
+0040 rem  * Used projects: Tapi enhancement, cdkcrmconhistimproutine.bbj etc.
+0050 REM  * CARIT-4865 - 20181004 - RVDH - if CARIT release > 15.05, apply field TAPI_CODE
+0060 REM  * CARIT-4865 - 20190125 - RVDH - adding USERID, CLASSID, IS_ADMIN fields
+0070 REM  * CARIT-5787 - 20190801 - Mayur - S scope and  describeRightAlignedField added
+0080 REM  * CARIT-6426 - 20191118 - RVDH - retrieveAllActiveEmployees added for quick load
+0090 REM  * CARIT-6456 - 20210201 - RVDH - getEmployeeEmailAddress will lookup up in EMPLOYEE and CUSTOMER to get a valid address
+0100 REM  * 2022-05-31 - Shreyash Bari - CARIT-10096 Close the connections before destroying the objects or closing the programs
+0110 REM  * CARIT-10334 - 20220728 - DB - Unencrypted Passwords in CarIT DB - Not CarIT Passwords
+0120 REM  * CARIT-13887 -20231127 - PS - iConnect - Change synchronization of employees
+0130 REM  */
+
+0140 use com.basiscomponents.db.DataRow
+0150 use com.basiscomponents.db.ResultSet
+0160 use com.basiscomponents.bc.SqlQueryBC
+
+0170 use ::commons/basiscomponentutils.bbj::basiscomponentutils
+0180 use ::api1/TableBC.bbj::TableBC
+0190 use ::api1/TextsBC.bbj::TextsBC
+0200 use ::commons/datetimeutils.bbj::datetimeutils
+0210 use ::commons/dbutils.bbj::dbutils
+0220 use ::commons/cryptoutils.bbj::cryptoutils
+
+
+0230 use java.sql.Types
+0240 use java.util.HashMap
+0250 use java.util.Iterator
+0260 use java.lang.Boolean
+0270 use java.util.Date
+0280 use java.util.Arrays
+0290 use java.util.ArrayList
+0300 use java.util.Collections
+
+0310 rem /**
+0320 rem  * EmployeesBC is a business component class for retrieving data from the table EMPLOYEE.<br>
+0330 rem  */
+0340 class public EmployeesBC extends TableBC
+
+0350 	field private BBjString signature$="EmployeesBC2311271102"
+0360 	field private BBjString tapi_desc_all$=""
+0370 	field private BBjNumber servicePack = 99.99
+0380 	field private ResultSet rsTmsEmpDay!
+0390 	field private ResultSet rsTmsEmpDayMut!
+0400 	field private ResultSet rsTmsEmpDaySche!
+0410 	field private ResultSet rsTmsLoanHea!
+0420     field private SqlQueryBC objSqlQueryBC!
+0430 	field public static BBjNumber EnablePerfTrace=0
+0440 	field public static BBjString strLog$=""
+
+0450 	rem /**
+0460     rem  * Constructor.
+0470     rem  * <p>
+0480     rem  * Creates a new EmployeesBC object.<br>
+0490     rem  * The database url from config.bbx (DATABASE) is used to connect to the CarITDMS database.
+0500     rem  */
+0510     method public EmployeesBC()
+0520     	#info(#signature$+" - constructor")
+0530 		#servicePack=#super!.getCarItReleaseLevel()
+0540         #setTable("EMPLOYEE")
+0550         #init()
+0560         #setScopes()
+0570         #EnablePerfTrace = num(STBL("PERFORMANCELOG",err = *next))
+0580     methodend
+
+
+0590     REM 	REM /**
+0600     REM 	REM  * provides typically fields used in the context of a employee.
+0610     REM 	REM  * @param BBjString suffix reflecting the [EMPLOYEE] left join AS suffix$ in the parent BC
+0620     REM 	REM  * @return BBjString partial SQL statement segment containing the characteristic EMPLOYEE table fields.
+0630     REM 	REM  */
+0640     REM 	method public static BBjString getCharacteristicSqlFields(BBjString suffix$)
+0650     REM 		#info("EmployeesBC - getCharacteristicSqlFields - suffix$='"+suffix$+"'")
+0660     REM 		declare BBjString sqlSeg!
+0670     REM 		sqlSeg! = "RTRIM(e.EM_NAME) AS EM_NAME"
+0680     REM 		sqlSeg! = sqlSeg!.replace("e.",suffix$+".")
+0690     REM 		methodret sqlSeg!
+0700     REM 	methodend
+
+
+0710 	rem /**
+0720     rem  * get the attributes of the business component fields.
+0730     rem  * @return DataRow object including the fields meta data.
+0740     rem  */
+0750     method public DataRow getAttributesRecord()
+0760         #info(#signature$+" - getAttributesRecord")
+0770         declare DataRow ar!
+0780         ar!=new DataRow()
+0790         REM ar! = #super!.getAttributesRecord()
+0800 		#super!.describeBCField(ar!,"EMPLOYEE_ID",java.sql.Types.VARCHAR,"The ID of the employee","C12",2, "EMPLOYEE", "EMPLOYEE_ID", "")
+0810 		#super!.describeBCField(ar!,"EM_NAME",java.sql.Types.VARCHAR,"Name of the employee","C50 ",1, "EMPLOYEE", "EM_NAME", "")
+0820 		#super!.describeBCField(ar!,"ME_STD_TIME",java.sql.Types.NUMERIC,"Standard time for this employee","N6 ",1, "EMPLOYEE", "ME_STD_TIME", "")
+0830 		#super!.describeBCField(ar!,"EM_LOGIN_NAME",java.sql.Types.VARCHAR,"Login name (former user name of USER table)","C32 ",1, "EMPLOYEE", "EM_LOGIN_NAME", "")
+0840 		#super!.describeBCField(ar!,"EM_PASSWORD",java.sql.Types.VARCHAR,"Password (former attribute of USER table)","C32 ",1, "EMPLOYEE", "EM_PASSWORD", "")
+0850 		#super!.describeBCField(ar!,"ARS_GRP_ID",java.sql.Types.VARCHAR,"Acces right group ID","C12 ",1, "EMPLOYEE", "ARS_GRP_ID", "")
+0860 		#super!.describeBCField(ar!,"EM_FULL_NAME",java.sql.Types.VARCHAR,"Full name for this employee for display","C100 ",1, "EMPLOYEE", "EM_FULL_NAME", "")
+0870 		REM #super!.describeBCField(ar!,"ME_GROUP",java.sql.Types.VARCHAR,"Tarief group","C4 ",1, "EMPLOYEE", "ME_GROUP", "")
+0880 		#super!.describeBCField(ar!,"LANG_CODE",java.sql.Types.VARCHAR,"Language code = LANG","C4 ",1, "EMPLOYEE", "LANG_CODE", "")
+0890 		#super!.describeBCField(ar!,"ME_DEF_TIME_SUN",java.sql.Types.NUMERIC,"Default time for Sunday","N6 ",1, "EMPLOYEE", "ME_DEF_TIME_SUN", "")
+0900 		#super!.describeBCField(ar!,"ME_DEF_ACT",java.sql.Types.VARCHAR,"Default activity on Sunday","C4 ",1, "EMPLOYEE", "ME_DEF_ACT", "")
+0910 		#super!.describeBCField(ar!,"ME_DEF_TIME_MON",java.sql.Types.NUMERIC,"Default time for Monday","N6 ",1, "EMPLOYEE", "ME_DEF_TIME_MON", "")
+0920 		#super!.describeBCField(ar!,"ME_DEF_ACT_1",java.sql.Types.VARCHAR,"Default activity on Monday","C4 ",1, "EMPLOYEE", "ME_DEF_ACT_1", "")
+0930 		#super!.describeBCField(ar!,"ME_DEF_TIME_TUE",java.sql.Types.NUMERIC,"Default time for Tuesday","N6 ",1, "EMPLOYEE", "ME_DEF_TIME_TUE", "")
+0940 		#super!.describeBCField(ar!,"ME_DEF_ACT_2",java.sql.Types.VARCHAR,"Default activity on Tuesday","C4 ",1, "EMPLOYEE", "ME_DEF_ACT_2", "")
+0950 		#super!.describeBCField(ar!,"ME_DEF_TIME_WED",java.sql.Types.NUMERIC,"Default time for Wednesday","N6 ",1, "EMPLOYEE", "ME_DEF_TIME_WED", "")
+0960 		#super!.describeBCField(ar!,"ME_DEF_ACT_3",java.sql.Types.VARCHAR,"Default activity on Wednesday","C4 ",1, "EMPLOYEE", "ME_DEF_ACT_3", "")
+0970 		#super!.describeBCField(ar!,"ME_DEF_TIME_THU",java.sql.Types.NUMERIC,"Default time for Thursday","N6 ",1, "EMPLOYEE", "ME_DEF_TIME_THU", "")
+0980 		#super!.describeBCField(ar!,"ME_DEF_ACT_4",java.sql.Types.VARCHAR,"Default activity on Thursday","C4 ",1, "EMPLOYEE", "ME_DEF_ACT_4", "")
+0990 		#super!.describeBCField(ar!,"ME_DEF_TIME_FRI",java.sql.Types.NUMERIC,"Default time for Friday","N6 ",1, "EMPLOYEE", "ME_DEF_TIME_FRI", "")
+1000 		#super!.describeBCField(ar!,"ME_DEF_ACT_5",java.sql.Types.VARCHAR,"Default activity on Friday","C4 ",1, "EMPLOYEE", "ME_DEF_ACT_5", "")
+1010 		#super!.describeBCField(ar!,"ME_DEF_TIME_SAT",java.sql.Types.NUMERIC,"Default time for Saturday","N6 ",1, "EMPLOYEE", "ME_DEF_TIME_SAT", "")
+1020 		#super!.describeBCField(ar!,"ME_DEF_ACT_6",java.sql.Types.VARCHAR,"Default activity on Saturday","C4 ",1, "EMPLOYEE", "ME_DEF_ACT_6", "")
+1030 		#super!.describeBCField(ar!,"EDIT_COUNTER",java.sql.Types.NUMERIC,"Edit counter (internally used for soft locking)","N4 ",1, "EMPLOYEE", "EDIT_COUNTER", "")
+1040 		#super!.describeBCField(ar!,"EM_TEAM",java.sql.Types.VARCHAR,"Team where employee belongs to = TEAM","C4 ",1, "EMPLOYEE", "EM_TEAM", "")
+1050 		#super!.describeBCField(ar!,"EM_EXTERNAL_NR",java.sql.Types.VARCHAR,"External employee number","C20 ",1, "EMPLOYEE", "EM_EXTERNAL_NR", "")
+1060 		#super!.describeBCField(ar!,"EM_COST_OBJECT",java.sql.Types.VARCHAR,"Cost object for this employee = TCOS","C4 ",1, "EMPLOYEE", "EM_COST_OBJECT", "")
+1070 		#super!.describeBCField(ar!,"EM_RED_FACTOR",java.sql.Types.NUMERIC,"Reduction factor","N7 ",1, "EMPLOYEE", "EM_RED_FACTOR", "")
+1080 		#super!.describeBCField(ar!,"EM_PROD_FACTOR",java.sql.Types.NUMERIC,"Production factor","N7 ",1, "EMPLOYEE", "EM_PROD_FACTOR", "")
+1090 		#super!.describeBCField(ar!,"EM_DEP_CODE",java.sql.Types.VARCHAR,"Department code","C4 ",1, "EMPLOYEE", "EM_DEP_CODE", "")
+1100 		#super!.describeBCField(ar!,"EM_OVERTIME_YN",java.sql.Types.NUMERIC,"Overtime indicator","N1 ",1, "EMPLOYEE", "EM_OVERTIME_YN", "")
+1110 		#super!.describeBCField(ar!,"EM_OVERTIME_FACT",java.sql.Types.NUMERIC,"Overtime factor","N4 ",1, "EMPLOYEE", "EM_OVERTIME_FACT", "")
+1120 		#super!.describeBCField(ar!,"EM_FUNC_ID",java.sql.Types.VARCHAR,"Employee funtion ID","C4 ",1, "EMPLOYEE", "EM_FUNC_ID", "")
+1130 		#super!.describeBCField(ar!,"EM_TEN_STA_DATE",java.sql.Types.DATE,"Tenure start date","DATE8 ",1, "EMPLOYEE", "EM_TEN_STA_DATE", "")
+1140 		#super!.describeBCField(ar!,"EM_TEN_END_DATE",java.sql.Types.DATE,"Tenure end date","DATE8 ",1, "EMPLOYEE", "EM_TEN_END_DATE", "")
+1150 		#super!.describeBCField(ar!,"EM_PAY_END_DATE",java.sql.Types.DATE,"Last date salery payment because of illness","DATE8 ",1, "EMPLOYEE", "EM_PAY_END_DATE", "")
+1160 		#super!.describeBCField(ar!,"EM_ACTIVE_YN",java.sql.Types.NUMERIC,"Indicator active employee","N1 ",1, "EMPLOYEE", "EM_ACTIVE_YN", "")
+1170 		#super!.describeBCField(ar!,"EM_FLEXTIME_YN",java.sql.Types.NUMERIC,"Indicator flextime for this employee","N1 ",1, "EMPLOYEE", "EM_FLEXTIME_YN", "")
+1180 		#super!.describeBCField(ar!,"EM_NO_HOL_HOURS",java.sql.Types.NUMERIC,"Number of holliday hours for this employee","N8 ",1, "EMPLOYEE", "EM_NO_HOL_HOURS", "")
+1190 		#super!.describeBCField(ar!,"EM_NO_EXT_HOURS",java.sql.Types.NUMERIC,"Number of extra hours of for this employee","N8 ",1, "EMPLOYEE", "EM_NO_EXT_HOURS", "")
+1200 		#super!.describeBCField(ar!,"NOT_USED_1",java.sql.Types.NUMERIC,"Not in use","N4 ",1, "EMPLOYEE", "NOT_USED_1", "")
+1210 		#super!.describeBCField(ar!,"CU_NR",java.sql.Types.VARCHAR,"Customer number","C12 align=r ",1, "EMPLOYEE", "CU_NR", "")
+1220 		#super!.describeBCField(ar!,"EM_FIRST_NAME",java.sql.Types.VARCHAR,"First name of the employee","C50 ",1, "EMPLOYEE", "EM_FIRST_NAME", "")
+1230 		#super!.describeBCField(ar!,"EM_NAME_PREFIX",java.sql.Types.VARCHAR,"Prefix of the last name","C15 ",1, "EMPLOYEE", "EM_NAME_PREFIX", "")
+1240 		#super!.describeBCField(ar!,"EM_MATCHCODE",java.sql.Types.VARCHAR,"Matchcode","C8 ",1, "EMPLOYEE", "EM_MATCHCODE", "")
+1250 		#super!.describeBCField(ar!,"TP_PAR_ID",java.sql.Types.VARCHAR,"Tolerance parameter schema ID","C4 ",1, "EMPLOYEE", "TP_PAR_ID", "")
+1260 		#super!.describeBCField(ar!,"WEEK_SCHE_ID",java.sql.Types.VARCHAR,"Default schedule ID","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID", "")
+1270 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_1",java.sql.Types.VARCHAR,"Schedule ID for calender week 1","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_1", "")
+1280 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_2",java.sql.Types.VARCHAR,"Schedule ID for calender week 2","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_2", "")
+1290 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_3",java.sql.Types.VARCHAR,"Schedule ID for calender week 3","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_3", "")
+1300 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_4",java.sql.Types.VARCHAR,"Schedule ID for calender week 4","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_4", "")
+1310 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_5",java.sql.Types.VARCHAR,"Schedule ID for calender week 5","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_5", "")
+1320 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_6",java.sql.Types.VARCHAR,"Schedule ID for calender week 6","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_6", "")
+1330 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_7",java.sql.Types.VARCHAR,"Schedule ID for calender week 7","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_7", "")
+1340 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_8",java.sql.Types.VARCHAR,"Schedule ID for calender week 8","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_8", "")
+1350 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_9",java.sql.Types.VARCHAR,"Schedule ID for calender week 9","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_9", "")
+1360 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_10",java.sql.Types.VARCHAR,"Schedule ID for calender week 10","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_10", "")
+1370 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_11",java.sql.Types.VARCHAR,"Schedule ID for calender week 11","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_11", "")
+1380 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_12",java.sql.Types.VARCHAR,"Schedule ID for calender week 12","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_12", "")
+1390 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_13",java.sql.Types.VARCHAR,"Schedule ID for calender week 13","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_13", "")
+1400 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_14",java.sql.Types.VARCHAR,"Schedule ID for calender week 14","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_14", "")
+1410 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_15",java.sql.Types.VARCHAR,"Schedule ID for calender week 15","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_15", "")
+1420 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_16",java.sql.Types.VARCHAR,"Schedule ID for calender week 16","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_16", "")
+1430 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_17",java.sql.Types.VARCHAR,"Schedule ID for calender week 17","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_17", "")
+1440 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_18",java.sql.Types.VARCHAR,"Schedule ID for calender week 18","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_18", "")
+1450 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_19",java.sql.Types.VARCHAR,"Schedule ID for calender week 19","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_19", "")
+1460 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_20",java.sql.Types.VARCHAR,"Schedule ID for calender week 20","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_20", "")
+1470 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_21",java.sql.Types.VARCHAR,"Schedule ID for calender week 21","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_21", "")
+1480 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_22",java.sql.Types.VARCHAR,"Schedule ID for calender week 22","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_22", "")
+1490 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_23",java.sql.Types.VARCHAR,"Schedule ID for calender week 23","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_23", "")
+1500 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_24",java.sql.Types.VARCHAR,"Schedule ID for calender week 24","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_24", "")
+1510 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_25",java.sql.Types.VARCHAR,"Schedule ID for calender week 25","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_25", "")
+1520 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_26",java.sql.Types.VARCHAR,"Schedule ID for calender week 26","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_26", "")
+1530 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_27",java.sql.Types.VARCHAR,"Schedule ID for calender week 27","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_27", "")
+1540 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_28",java.sql.Types.VARCHAR,"Schedule ID for calender week 28","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_28", "")
+1550 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_29",java.sql.Types.VARCHAR,"Schedule ID for calender week 29","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_29", "")
+1560 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_30",java.sql.Types.VARCHAR,"Schedule ID for calender week 30","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_30", "")
+1570 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_31",java.sql.Types.VARCHAR,"Schedule ID for calender week 31","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_31", "")
+1580 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_32",java.sql.Types.VARCHAR,"Schedule ID for calender week 32","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_32", "")
+1590 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_33",java.sql.Types.VARCHAR,"Schedule ID for calender week 33","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_33", "")
+1600 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_34",java.sql.Types.VARCHAR,"Schedule ID for calender week 34","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_34", "")
+1610 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_35",java.sql.Types.VARCHAR,"Schedule ID for calender week 35","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_35", "")
+1620 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_36",java.sql.Types.VARCHAR,"Schedule ID for calender week 36","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_36", "")
+1630 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_37",java.sql.Types.VARCHAR,"Schedule ID for calender week 37","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_37", "")
+1640 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_38",java.sql.Types.VARCHAR,"Schedule ID for calender week 38","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_38", "")
+1650 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_39",java.sql.Types.VARCHAR,"Schedule ID for calender week 39","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_39", "")
+1660 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_40",java.sql.Types.VARCHAR,"Schedule ID for calender week 40","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_40", "")
+1670 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_41",java.sql.Types.VARCHAR,"Schedule ID for calender week 41","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_41", "")
+1680 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_42",java.sql.Types.VARCHAR,"Schedule ID for calender week 42","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_42", "")
+1690 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_43",java.sql.Types.VARCHAR,"Schedule ID for calender week 43","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_43", "")
+1700 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_44",java.sql.Types.VARCHAR,"Schedule ID for calender week 44","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_44", "")
+1710 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_45",java.sql.Types.VARCHAR,"Schedule ID for calender week 45","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_45", "")
+1720 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_46",java.sql.Types.VARCHAR,"Schedule ID for calender week 46","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_46", "")
+1730 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_47",java.sql.Types.VARCHAR,"Schedule ID for calender week 47","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_47", "")
+1740 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_48",java.sql.Types.VARCHAR,"Schedule ID for calender week 48","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_48", "")
+1750 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_49",java.sql.Types.VARCHAR,"Schedule ID for calender week 49","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_49", "")
+1760 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_50",java.sql.Types.VARCHAR,"Schedule ID for calender week 50","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_50", "")
+1770 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_51",java.sql.Types.VARCHAR,"Schedule ID for calender week 51","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_51", "")
+1780 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_52",java.sql.Types.VARCHAR,"Schedule ID for calender week 52","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_52", "")
+1790 		#super!.describeBCField(ar!,"WEEK_SCHE_ID_53",java.sql.Types.VARCHAR,"Schedule ID for calender week 53","C4 ",1, "EMPLOYEE", "WEEK_SCHE_ID_53", "")
+1800 		#super!.describeBCField(ar!,"EM_BAL_HOL_HOUR",java.sql.Types.NUMERIC,"Balance of holliday hours for this employee","N8 ",1, "EMPLOYEE", "EM_BAL_HOL_HOUR", "")
+1810 		#super!.describeBCField(ar!,"EM_BAL_FLEX_HOUR",java.sql.Types.NUMERIC,"Balance of flex hours of for this employee","N8 ",1, "EMPLOYEE", "EM_BAL_FLEX_HOUR", "")
+1820 		#super!.describeBCField(ar!,"EM_BAL_EXT_HOUR",java.sql.Types.NUMERIC,"Balance of extra hours of for this employee","N8 ",1, "EMPLOYEE", "EM_BAL_EXT_HOUR", "")
+1830 		#super!.describeBCField(ar!,"EMPLOYEE_ID_LA",java.sql.Types.VARCHAR,"Left alligned employee id","C12 ",1, "EMPLOYEE", "EMPLOYEE_ID_LA", "")
+1840 		#super!.describeBCField(ar!,"EM_INITIALS",java.sql.Types.VARCHAR,"Employee initials","C4 ",1, "EMPLOYEE", "EM_INITIALS", "")
+1850 		#super!.describeBCField(ar!,"COMP_ID",java.sql.Types.VARCHAR,"Company Id","C3 align=r ",1, "EMPLOYEE", "COMP_ID", "")
+1860 		#super!.describeBCField(ar!,"BRANCH_ID",java.sql.Types.VARCHAR,"Branche ID","C3 align=r ",1, "EMPLOYEE", "BRANCH_ID", "")
+1870 		#super!.describeBCField(ar!,"WKS_ID",java.sql.Types.VARCHAR,"Workshop Id","C3 align=r ",1, "EMPLOYEE", "WKS_ID", "")
+1880 		#super!.describeBCField(ar!,"USERID",java.sql.Types.VARCHAR,"User ID","C4 ",1, "EMPLOYEE", "USERID", "")
+1890 		#super!.describeBCField(ar!,"EM_MAX_PAY_AMNT",java.sql.Types.NUMERIC,"Maximum amount to spend per payment","N15 ",1, "EMPLOYEE", "EM_MAX_PAY_AMNT", "")
+1900 		#super!.describeBCField(ar!,"EM_MAX_DAY_AMNT",java.sql.Types.NUMERIC,"Maximum amount to spend per day","N15 ",1, "EMPLOYEE", "EM_MAX_DAY_AMNT", "")
+1910 		#super!.describeBCField(ar!,"EM_DISP_UNIT_YN",java.sql.Types.NUMERIC,"Display time units instead of hours/minutes in the workshop planning Y/N","Y_N1 ",1, "EMPLOYEE", "EM_DISP_UNIT_YN", "")
+1920 		#super!.describeBCField(ar!,"EMPLOYEEID",java.sql.Types.VARCHAR,"CRM Employee for DAT interface","C17 ",1, "EMPLOYEE", "EMPLOYEEID", "")
+1930 		#super!.describeBCField(ar!,"EMPLOYEEID2",java.sql.Types.VARCHAR,"CRM employee","C17 ",1, "EMPLOYEE", "EMPLOYEEID2", "")
+1940 		#super!.describeBCField(ar!,"WHS_RESP",java.sql.Types.VARCHAR,"Allowed to post stock in the warehouse","C4 ",1, "EMPLOYEE", "WHS_RESP", "")
+1950 		#super!.describeBCField(ar!,"WPS_RIGHTS",java.sql.Types.VARCHAR,"Right in workshop planning","C4 ",1, "EMPLOYEE", "WPS_RIGHTS", "")
+1960 		#super!.describeBCField(ar!,"EM_SUBDRGHT_IND",java.sql.Types.NUMERIC,"Sub division rights indicator","N1 ",1, "EMPLOYEE", "EM_SUBDRGHT_IND", "")
+1970 		#super!.describeBCField(ar!,"EMPLOYEE_ID_1",java.sql.Types.VARCHAR,"Change to employee ID in progress","C12 ",1, "EMPLOYEE", "EMPLOYEE_ID_1", "")
+1980 		#super!.describeBCField(ar!,"FPR_ID",java.sql.Types.VARCHAR,"Financial payroll system ID","C4 ",1, "EMPLOYEE", "FPR_ID", "")
+1990 		#super!.describeBCField(ar!,"FPR_COMP_ID",java.sql.Types.VARCHAR,"Financial payroll company ID","C4 ",1, "EMPLOYEE", "FPR_COMP_ID", "")
+2000 		#super!.describeBCField(ar!,"EM_PR_ID",java.sql.Types.VARCHAR,"ID of this employee in payroll system","C10 ",1, "EMPLOYEE", "EM_PR_ID", "")
+2010 		#super!.describeBCField(ar!,"DEPID",java.sql.Types.VARCHAR,"Default CRM department for this employee","C17 ",1, "EMPLOYEE", "DEPID", "")
+2020 		#super!.describeBCField(ar!,"EM_COST_PRICE",java.sql.Types.NUMERIC,"Cost price of the employee","N6 ",1, "EMPLOYEE", "EM_COST_PRICE", "")
+2030 		#super!.describeBCField(ar!,"EM_CONT_HOUR_DAY",java.sql.Types.NUMERIC,"Contract hours per day","N6 ",1, "EMPLOYEE", "EM_CONT_HOUR_DAY", "")
+2040 		#super!.describeBCField(ar!,"EM_PWD_DATE",java.sql.Types.DATE,"Date password was set (see parameter 244)","DATE8 ",1, "EMPLOYEE", "EM_PWD_DATE", "")
+2050 		#super!.describeBCField(ar!,"SAL_LVL",java.sql.Types.VARCHAR,"Sales Level  = PCSL","C4 ",1, "EMPLOYEE", "SAL_LVL", "")
+2060 		#super!.describeBCField(ar!,"EM_FAXNR_BUS",java.sql.Types.VARCHAR,"Employees business fax number","C30 ",1, "EMPLOYEE", "EM_FAXNR_BUS", "")
+2070 		#super!.describeBCField(ar!,"EM_TEL_BUS",java.sql.Types.VARCHAR,"Employees business telephone number","C30 ",1, "EMPLOYEE", "EM_TEL_BUS", "")
+2080 		#super!.describeBCField(ar!,"EM_MOB_BUS",java.sql.Types.VARCHAR,"Employees business mobile number","C30 ",1, "EMPLOYEE", "EM_MOB_BUS", "")
+2090 		#super!.describeBCField(ar!,"EM_EMAIL_BUS",java.sql.Types.VARCHAR,"Employees business email address","C75 ",1, "EMPLOYEE", "EM_EMAIL_BUS", "")
+2100 		#super!.describeBCField(ar!,"CRM_RESTR_GRP_1",java.sql.Types.VARCHAR,"CRM - Profiile = CRM1","C4 ",1, "EMPLOYEE", "CRM_RESTR_GRP_1", "")
+2110 		#super!.describeBCField(ar!,"CRM_RESTR_GRP_2",java.sql.Types.VARCHAR,"CRM - Data ownership = CRM2","C4 ",1, "EMPLOYEE", "CRM_RESTR_GRP_2", "")
+2120 		#super!.describeBCField(ar!,"CRM_RESTR_GRP_3",java.sql.Types.VARCHAR,"CRM - Delete allowed = CRM3","C4 ",1, "EMPLOYEE", "CRM_RESTR_GRP_3", "")
+2130 		#super!.describeBCField(ar!,"CRM_RESTR_GRP_4",java.sql.Types.VARCHAR,"CRM - Other departments = CRM4","C4 ",1, "EMPLOYEE", "CRM_RESTR_GRP_4", "")
+2140 		#super!.describeBCField(ar!,"CRM_SYS_EMAIL_YN",java.sql.Types.NUMERIC,"CRM - System email yes/no","Y_N1 ",1, "EMPLOYEE", "CRM_SYS_EMAIL_YN", "")
+2150 		#super!.describeBCField(ar!,"CRM_SALESMAN_YN",java.sql.Types.NUMERIC,"CRM - Salesman indicator yes/no","Y_N1 ",1, "EMPLOYEE", "CRM_SALESMAN_YN", "")
+2160 		#super!.describeBCField(ar!,"CRM_SYS_USER_YN",java.sql.Types.NUMERIC,"CRM - System user yes/no","Y_N1 ",1, "EMPLOYEE", "CRM_SYS_USER_YN", "")
+2170 		REM #super!.describeBCField(ar!,"CRM_PASSWORD",java.sql.Types.VARCHAR,"CRM - Password for CRM login","C10 ",1, "EMPLOYEE", "CRM_PASSWORD", "")
+2180 		#super!.describeBCField(ar!,"EM_WWGRP_YN",java.sql.Types.NUMERIC,"Display workshopgroups on WPS date form","Y_N1 ",1, "EMPLOYEE", "EM_WWGRP_YN", "")
+2190 		#super!.describeBCField(ar!,"EM_GLE_TOK_ID",java.sql.Types.VARCHAR,"Employees Google Token ID","C100 ",1, "EMPLOYEE", "EM_GLE_TOK_ID", "")
+2200 		#super!.describeBCField(ar!,"EM_LAP_TOK_ID",java.sql.Types.VARCHAR,"Token ID of last pulled Google event","C100 ",1, "EMPLOYEE", "EM_LAP_TOK_ID", "")
+2210 		#super!.describeBCField(ar!,"EM_MEC_PLAN_YN",java.sql.Types.NUMERIC,"User wants to plan with the plan board instead of capacity planning","Y_N1 ",1, "EMPLOYEE", "EM_MEC_PLAN_YN", "")
+2220 		#super!.describeBCField(ar!,"EM_FIX_PRICE_YN",java.sql.Types.NUMERIC,"Indicator disable fixed job price yes/no","Y_N1 ",1, "EMPLOYEE", "EM_FIX_PRICE_YN", "")
+2230 		#super!.describeBCField(ar!,"EM_FIX_PRICE_PER",java.sql.Types.NUMERIC,"Percentage max. difference between job price and fix price","N5 ",1, "EMPLOYEE", "EM_FIX_PRICE_PER", "")
+2240 		REM #super!.describeBCField(ar!,"EM_PWD_OUTLOOK",java.sql.Types.VARCHAR,"Employee Outlook password","C50 ",1, "EMPLOYEE", "EM_PWD_OUTLOOK", "")
+2250 		REM #super!.describeBCField(ar!,"EM_UID_OUTLOOK",java.sql.Types.VARCHAR,"UserID Outlook","C75 ",1, "EMPLOYEE", "EM_UID_OUTLOOK", "")
+2260 		#super!.describeBCField(ar!,"EM_APPR_YEARS",java.sql.Types.VARCHAR,"Number of years of apprenticeship (blank = employee is not an apprentice)","C1 ",1, "EMPLOYEE", "EM_APPR_YEARS", "")
+2270 		#super!.describeBCField(ar!,"OPEL_ROLE_CODE",java.sql.Types.VARCHAR,"Opel role code for Opel Cockpit interface = OPRL","C4 ",1, "EMPLOYEE", "OPEL_ROLE_CODE", "")
+2280 		#super!.describeBCField(ar!,"TAPI_CODE",java.sql.Types.VARCHAR,"TAPI employee options = TAPI","C4 ",1, "EMPLOYEE", "TAPI_CODE", "")
+2290 		#super!.describeBCField(ar!,"COMP_ID_1",java.sql.Types.VARCHAR,"Company where employee is employed","C3 ",1, "EMPLOYEE", "COMP_ID_1", "")
+2300 		#super!.describeBCField(ar!,"BRANCH_ID_1",java.sql.Types.VARCHAR,"Branch where employee is employed","C3 ",1, "EMPLOYEE", "BRANCH_ID_1", "")
+2310 		#super!.describeBCField(ar!,"EM_INT_USER_YN",java.sql.Types.NUMERIC,"This user is an internal user Yes/No (1/0)","Y_N1 ",1, "EMPLOYEE", "EM_INT_USER_YN", "")
+2320 		#super!.describeBCField(ar!,"EM_ENTERPRISE_YN",java.sql.Types.NUMERIC,"This user is an enterprise user Yes/No (1/0)","Y_N1 ",1, "EMPLOYEE", "EM_ENTERPRISE_YN", "")
+2330 		#super!.describeBCField(ar!,"EM_ATT_PATH",java.sql.Types.VARCHAR,"Default path from where attachments to download from","C100 ",1, "EMPLOYEE", "EM_ATT_PATH", "")
+2340 		REM #super!.describeBCField(ar!,"DUMMY",java.sql.Types.VARCHAR,"Dummy","C29 ",1, "EMPLOYEE", "DUMMY", "")
+2350 		REM CARIT-13887 iConnect - Change synchronization of employees
+2360 		REM Child Object fields
+2370 		#super!.describeBCField(ar!,"WEEKSCHEDULES",-974,"WEEKSCHEDULES","WEEKSCHEDULES",0,"","")
+2380 		#super!.describeBCField(ar!,"DEPARTMENTS",-975,"DEPARTMENTS","DEPARTMENTS",0,"","")
+
+2390         VARCHAR%=java.sql.Types.VARCHAR
+2400         DATE%=java.sql.Types.DATE
+2410         NUMERIC%=java.sql.Types.NUMERIC
+2420         REM /** notice git.audev.com WIKI page about getAttributesRecord entry generation */
+2430         rem /** Add additional attributes here */
+2440         ar!.setFieldValue("DEF_COMP_ID",Types.VARCHAR,null())
+2450         ar!.setFieldAttribute("DEF_COMP_ID","EDITABLE","0")
+2460         ar!.setFieldValue("DEF_BRANCH_ID",Types.VARCHAR,null())
+2470         ar!.setFieldAttribute("DEF_BRANCH_ID","EDITABLE","0")
+2480         ar!.setFieldValue("DEF_WHS_ID",Types.VARCHAR,null())
+2490         ar!.setFieldAttribute("DEF_WHS_ID","EDITABLE","0")
+2500         ar!.setFieldValue("DEF_WKS_ID",Types.VARCHAR,null())
+2510         ar!.setFieldAttribute("DEF_WKS_ID","EDITABLE","0")
+2520         ar!.setFieldValue("DEF_SAL_ID",Types.VARCHAR,null())
+2530         ar!.setFieldAttribute("DEF_SAL_ID","EDITABLE","0")
+
+2540         #super!.describeBCField(ar!,"USR_COMP_ID",java.sql.Types.VARCHAR,"initial company identification","C3",0,"USER","COMPANY_ID","")
+2550         #super!.describeBCField(ar!,"USR_BRANCH_ID",java.sql.Types.VARCHAR,"initial branch identification","C3",0,"USER","BRANCH_ID","")
+2560         #super!.describeBCField(ar!,"USR_WHS_ID",java.sql.Types.VARCHAR,"initial warehouse identification","C3",0,"USER","WHS_ID","")
+2570         #super!.describeBCField(ar!,"USR_WKS_ID",java.sql.Types.VARCHAR,"initial workshop identification","C3",0,"USER","WKS_ID","")
+2580         #super!.describeBCField(ar!,"USR_SAL_ID",java.sql.Types.VARCHAR,"initial sales department identification","C3",0,"USER","SAL_ID","")
+
+2590         #super!.describeBCField(ar!,"USERID",java.sql.Types.VARCHAR,"User ID ","C4",1,"EMPLOYEE","USERID","")
+2600         #super!.describeBCField(ar!,"CLASSID",java.sql.Types.VARCHAR,"Class ID","C4; if value is 0000, then is this employee an admin",0, "ARUACCGRP", "CLASSID","")
+2610         #super!.describeBCField(ar!,"IS_ADMIN",java.sql.Types.VARCHAR,"Administator indicator ","Boolean; this field is true when CLASSID is equal '0000'",0, "", "","")
+2620         if #servicePack>15.04
+2630 			#super!.describeBCField(ar!,"TAPI_CODE",java.sql.Types.VARCHAR,"TAPI option code","Scope T; Character 4; since Rel.15.06",1, "EMPLOYEE", "TAPI_CODE", "")
+2640 			#super!.describeBCField(ar!,"TAPI_DESC",java.sql.Types.VARCHAR,"TAPI option description","Scope T; Character; since Rel.15.06; will be null before or if not maintained.; description of Text index TAPI",0, "TEXT", "TEXT_DESCR", "")
+2650         fi
+2660 		REM /** virtuals */
+2670         #super!.describeBCField(ar!,"ID",VARCHAR%,"Identification","Scope B; virtual; character; unique primary key",0,"","","")
+2680         #super!.describeBCField(ar!,"DESC",VARCHAR%,"Description","Scope B; virtual; character; common description of the subject",0,"","","")
+
+2690         REM /** Plan center */
+2700         #super!.describeBCField(ar!,"SCHEDULE",VARCHAR%,"Available","Scope B; virtual; character; unique primary key",0,"","","")
+2710         #super!.describeBCField(ar!,"SORT",java.sql.Types.VARCHAR,"Sorting","Column for custom sorting",0,"","hide=true")
+2720         methodret #super!.translateAttributesRecord("EmployeesBC",ar!)
+2730     methodend
+
+
+2740     rem /**
+2750     rem  * Used from the constructors only to initialize the BC with custom retrieve statement and field mappings.
+2760     rem  */
+2770     method private void init()
+2780         #info("EmployeesBC - init")
+2790         lc$=stbl("LANGUAGE")
+2800         sql$ =    "SELECT "
+2810         sql$=sql$+"E.* "
+2820         sql$=sql$+",'   ' as DEF_COMP_ID,'   ' as DEF_BRANCH_ID,'   ' as DEF_WHS_ID,'   ' as DEF_WKS_ID,'   ' as DEF_SAL_ID"
+2830         sql$=sql$+", u.COMP_ID AS USR_COMP_ID, u.BRANCH_ID as USR_BRANCH_ID, u.WHS_ID as USR_WHS_ID, u.WKS_ID as USR_WKS_ID, u.SAL_ID as USR_SAL_ID"
+2840         sql$=sql$+", E.EMPLOYEE_ID AS ID"
+2850         sql$=sql$+", ARUACCGRP.CLASSID"
+2860         sql$=sql$+", CASE WHEN ARUACCGRP.CLASSID='0000' THEN TRUE ELSE FALSE END AS IS_ADMIN"
+2870         sql$=sql$+", RTRIM(E.EM_FULL_NAME) AS DESC"
+2880         if #servicePack>15.04
+2890 			sql$=sql$+", RTRIM(TAPI.TXT_DESCR) AS TAPI_DESC"
+2900 		fi
+2910 		REM CARIT-13887 iConnect - Change synchronization of employees
+2920 		sql$=sql$+" ,'' AS WEEKSCHEDULES"
+2930 		sql$=sql$+" ,'' AS DEPARTMENTS"
+
+2940         sql$=sql$+" FROM [EMPLOYEE] AS E"
+2950 		if #servicePack>15.04
+2960 			sql$=sql$+"  LEFT JOIN [TEXT] AS TAPI ON TAPI.TXT_INDEX='R' AND TAPI.TXT_ID=E.TAPI_CODE AND TAPI.LANG_CODE='"+lc$+"'"
+2970 		fi
+2980         sql$=sql$+"  LEFT JOIN [ARUACCGRP] as ARUACCGRP ON E.ARS_GRP_ID=ARUACCGRP.ARS_GRP_ID"
+2990         sql$=sql$+"  LEFT JOIN [USER] AS u ON E.USERID=u.USERID"
+3000         REM exclude those records which are marked for batch delete
+3010         sql$=sql$+" LEFT JOIN SYSDELTABLE ON PRIM_KEY=E.EMPLOYEE_ID AND SYSDELTABLE.""TABLE""='EMPLOYEE' WHERE SYSDELTABLE.""TABLE""is null "
+3020         #super!.setRetrieveSql(sql$)
+
+3030         REM Describe the right aligned fields
+3040 		#super!.describeRightAlignedField("EMPLOYEE_ID",12); REM align=r, The ID of the employee
+3050 		#super!.describeRightAlignedField("ME_GROUP",4); REM , Tarief group
+3060 		#super!.describeRightAlignedField("LANG_CODE",4); REM , Language code = LANG
+3070 		#super!.describeRightAlignedField("ME_DEF_ACT",4); REM , Default activity on Sunday = MEAC
+3080 		#super!.describeRightAlignedField("ME_DEF_ACT_1",4); REM , Default activity on Monday = MEAC
+3090 		#super!.describeRightAlignedField("ME_DEF_ACT_2",4); REM , Default activity on Tuesday = MEAC
+3100 		#super!.describeRightAlignedField("ME_DEF_ACT_3",4); REM , Default activity on Wednesday = MEAC
+3110 		#super!.describeRightAlignedField("ME_DEF_ACT_4",4); REM , Default activity on Thursday = MEAC
+3120 		#super!.describeRightAlignedField("ME_DEF_ACT_5",4); REM , Default activity on Friday = MEAC
+3130 		#super!.describeRightAlignedField("ME_DEF_ACT_6",4); REM , Default activity on Saturday = MEAC
+3140 		#super!.describeRightAlignedField("EM_TEAM",4); REM , Team where employee belongs to = TEAM
+3150 		#super!.describeRightAlignedField("EM_COST_OBJECT",4); REM , Cost object for this employee = TCOS
+3160 		#super!.describeRightAlignedField("EM_DEP_CODE",4); REM , Department code
+3170 		#super!.describeRightAlignedField("EM_FUNC_ID",4); REM , Employee funtion ID
+3180 		#super!.describeRightAlignedField("CU_NR",12); REM align=r, Customer number
+3190 		#super!.describeRightAlignedField("TP_PAR_ID",4); REM , Tolerance parameter schema ID
+3200 		#super!.describeRightAlignedField("WEEK_SCHE_ID",4); REM , Default schedule ID
+3210 		#super!.describeRightAlignedField("WEEK_SCHE_ID_1",4); REM , Schedule ID for calender week 1
+3220 		#super!.describeRightAlignedField("WEEK_SCHE_ID_2",4); REM , Schedule ID for calender week 2
+3230 		#super!.describeRightAlignedField("WEEK_SCHE_ID_3",4); REM , Schedule ID for calender week 3
+3240 		#super!.describeRightAlignedField("WEEK_SCHE_ID_4",4); REM , Schedule ID for calender week 4
+3250 		#super!.describeRightAlignedField("WEEK_SCHE_ID_5",4); REM , Schedule ID for calender week 5
+3260 		#super!.describeRightAlignedField("WEEK_SCHE_ID_6",4); REM , Schedule ID for calender week 6
+3270 		#super!.describeRightAlignedField("WEEK_SCHE_ID_7",4); REM , Schedule ID for calender week 7
+3280 		#super!.describeRightAlignedField("WEEK_SCHE_ID_8",4); REM , Schedule ID for calender week 8
+3290 		#super!.describeRightAlignedField("WEEK_SCHE_ID_9",4); REM , Schedule ID for calender week 9
+3300 		#super!.describeRightAlignedField("WEEK_SCHE_ID_10",4); REM , Schedule ID for calender week 10
+3310 		#super!.describeRightAlignedField("WEEK_SCHE_ID_11",4); REM , Schedule ID for calender week 11
+3320 		#super!.describeRightAlignedField("WEEK_SCHE_ID_12",4); REM , Schedule ID for calender week 12
+3330 		#super!.describeRightAlignedField("WEEK_SCHE_ID_13",4); REM , Schedule ID for calender week 13
+3340 		#super!.describeRightAlignedField("WEEK_SCHE_ID_14",4); REM , Schedule ID for calender week 14
+3350 		#super!.describeRightAlignedField("WEEK_SCHE_ID_15",4); REM , Schedule ID for calender week 15
+3360 		#super!.describeRightAlignedField("WEEK_SCHE_ID_16",4); REM , Schedule ID for calender week 16
+3370 		#super!.describeRightAlignedField("WEEK_SCHE_ID_17",4); REM , Schedule ID for calender week 17
+3380 		#super!.describeRightAlignedField("WEEK_SCHE_ID_18",4); REM , Schedule ID for calender week 18
+3390 		#super!.describeRightAlignedField("WEEK_SCHE_ID_19",4); REM , Schedule ID for calender week 19
+3400 		#super!.describeRightAlignedField("WEEK_SCHE_ID_20",4); REM , Schedule ID for calender week 20
+3410 		#super!.describeRightAlignedField("WEEK_SCHE_ID_21",4); REM , Schedule ID for calender week 21
+3420 		#super!.describeRightAlignedField("WEEK_SCHE_ID_22",4); REM , Schedule ID for calender week 22
+3430 		#super!.describeRightAlignedField("WEEK_SCHE_ID_23",4); REM , Schedule ID for calender week 23
+3440 		#super!.describeRightAlignedField("WEEK_SCHE_ID_24",4); REM , Schedule ID for calender week 24
+3450 		#super!.describeRightAlignedField("WEEK_SCHE_ID_25",4); REM , Schedule ID for calender week 25
+3460 		#super!.describeRightAlignedField("WEEK_SCHE_ID_26",4); REM , Schedule ID for calender week 26
+3470 		#super!.describeRightAlignedField("WEEK_SCHE_ID_27",4); REM , Schedule ID for calender week 27
+3480 		#super!.describeRightAlignedField("WEEK_SCHE_ID_28",4); REM , Schedule ID for calender week 28
+3490 		#super!.describeRightAlignedField("WEEK_SCHE_ID_29",4); REM , Schedule ID for calender week 29
+3500 		#super!.describeRightAlignedField("WEEK_SCHE_ID_30",4); REM , Schedule ID for calender week 30
+3510 		#super!.describeRightAlignedField("WEEK_SCHE_ID_31",4); REM , Schedule ID for calender week 31
+3520 		#super!.describeRightAlignedField("WEEK_SCHE_ID_32",4); REM , Schedule ID for calender week 32
+3530 		#super!.describeRightAlignedField("WEEK_SCHE_ID_33",4); REM , Schedule ID for calender week 33
+3540 		#super!.describeRightAlignedField("WEEK_SCHE_ID_34",4); REM , Schedule ID for calender week 34
+3550 		#super!.describeRightAlignedField("WEEK_SCHE_ID_35",4); REM , Schedule ID for calender week 35
+3560 		#super!.describeRightAlignedField("WEEK_SCHE_ID_36",4); REM , Schedule ID for calender week 36
+3570 		#super!.describeRightAlignedField("WEEK_SCHE_ID_37",4); REM , Schedule ID for calender week 37
+3580 		#super!.describeRightAlignedField("WEEK_SCHE_ID_38",4); REM , Schedule ID for calender week 38
+3590 		#super!.describeRightAlignedField("WEEK_SCHE_ID_39",4); REM , Schedule ID for calender week 39
+3600 		#super!.describeRightAlignedField("WEEK_SCHE_ID_40",4); REM , Schedule ID for calender week 40
+3610 		#super!.describeRightAlignedField("WEEK_SCHE_ID_41",4); REM , Schedule ID for calender week 41
+3620 		#super!.describeRightAlignedField("WEEK_SCHE_ID_42",4); REM , Schedule ID for calender week 42
+3630 		#super!.describeRightAlignedField("WEEK_SCHE_ID_43",4); REM , Schedule ID for calender week 43
+3640 		#super!.describeRightAlignedField("WEEK_SCHE_ID_44",4); REM , Schedule ID for calender week 44
+3650 		#super!.describeRightAlignedField("WEEK_SCHE_ID_45",4); REM , Schedule ID for calender week 45
+3660 		#super!.describeRightAlignedField("WEEK_SCHE_ID_46",4); REM , Schedule ID for calender week 46
+3670 		#super!.describeRightAlignedField("WEEK_SCHE_ID_47",4); REM , Schedule ID for calender week 47
+3680 		#super!.describeRightAlignedField("WEEK_SCHE_ID_48",4); REM , Schedule ID for calender week 48
+3690 		#super!.describeRightAlignedField("WEEK_SCHE_ID_49",4); REM , Schedule ID for calender week 49
+3700 		#super!.describeRightAlignedField("WEEK_SCHE_ID_50",4); REM , Schedule ID for calender week 50
+3710 		#super!.describeRightAlignedField("WEEK_SCHE_ID_51",4); REM , Schedule ID for calender week 51
+3720 		#super!.describeRightAlignedField("WEEK_SCHE_ID_52",4); REM , Schedule ID for calender week 52
+3730 		#super!.describeRightAlignedField("WEEK_SCHE_ID_53",4); REM , Schedule ID for calender week 53
+3740 		#super!.describeRightAlignedField("EM_INITIALS",4); REM , Employee initials
+3750 		#super!.describeRightAlignedField("COMP_ID",3); REM align=r, Company Id
+3760 		#super!.describeRightAlignedField("BRANCH_ID",3); REM align=r, Branche ID
+3770 		#super!.describeRightAlignedField("WKS_ID",3); REM align=r, Workshop Id
+3780 		#super!.describeRightAlignedField("USERID",4); REM , User ID
+3790 		#super!.describeRightAlignedField("WHS_RESP",4); REM , Allowed to post stock in the warehouse
+3800 		#super!.describeRightAlignedField("WPS_RIGHTS",4); REM , Right in workshop planning = WPSR
+3810 		#super!.describeRightAlignedField("FPR_ID",4); REM , Financial payroll system ID = ITPR
+3820 		#super!.describeRightAlignedField("FPR_COMP_ID",4); REM , Financial payroll company ID
+3830 		#super!.describeRightAlignedField("SAL_LVL",4); REM , Sales Level  = PCSL
+3840 		#super!.describeRightAlignedField("CRM_RESTR_GRP_1",4); REM , CRM - Profiile = CRM1
+3850 		#super!.describeRightAlignedField("CRM_RESTR_GRP_2",4); REM , CRM - Data ownership = CRM2
+3860 		#super!.describeRightAlignedField("CRM_RESTR_GRP_3",4); REM , CRM - Delete allowed = CRM3
+3870 		#super!.describeRightAlignedField("CRM_RESTR_GRP_4",4); REM , CRM - Other departments = CRM4
+3880 		#super!.describeRightAlignedField("OPEL_ROLE_CODE",4); REM , Opel role code for Opel Cockpit interface = OPRL
+3890 		#super!.describeRightAlignedField("TAPI_CODE",4); REM , TAPI employee options = TAPI
+3900     methodend
+
+
+3910     rem /**
+3920     rem  * Used from the constructor to set the available scopes for the BC.
+3930     rem  */
+3940     method private void setScopes()
+3950         #info("EmployeesBC - setScopes")
+3960         declare java.util.HashMap scopes!
+3970         declare BBjVector scopeVec!
+
+3980         scopes! = new java.util.HashMap()
+
+3990         scopeVec! = new BBjVector()
+4000         scopeVec!.addItem("ID")
+4010         scopeVec!.addItem("DESC")
+4020         scopes!.put("B",scopeVec!)
+
+4030         scopeVec! = new BBjVector()
+4040         scopeVec!.addItem("EMPLOYEE_ID")
+4050         scopeVec!.addItem("EM_NAME")
+4060         scopeVec!.addItem("EM_FULL_NAME")
+4070         scopes!.put("D",scopeVec!)
+
+4080         scopeVec! = new BBjVector()
+4090         scopeVec!.addItem("EMPLOYEE_ID")
+4100         scopeVec!.addItem("ARS_GRP_ID")
+4110         scopeVec!.addItem("USERID")
+4120         scopeVec!.addItem("CLASSID")
+4130         scopeVec!.addItem("IS_ADMIN")
+4140         scopeVec!.addItem("EM_SUBDRGHT_IND")
+4150         scopeVec!.addItem("EM_NAME")
+4160         scopeVec!.addItem("DEF_COMP_ID")
+4170         scopeVec!.addItem("DEF_BRANCH_ID")
+4180         scopeVec!.addItem("DEF_SAL_ID")
+4190         scopeVec!.addItem("DEF_WHS_ID")
+4200         scopeVec!.addItem("DEF_WKS_ID")
+4210         scopes!.put("E",scopeVec!)
+
+4220         scopeVec! = new BBjVector()
+4230         scopeVec!.addItem("EMPLOYEE_ID")
+4240         scopeVec!.addItem("EM_NAME")
+4250         scopeVec!.addItem("EM_FIRST_NAME")
+4260         scopeVec!.addItem("EM_NAME_PREFIX")
+4270         scopes!.put("N",scopeVec!)
+
+4280         REM /** since CarIT Rel. Version 15.06 official - do no apply scope before */
+4290         scopeVec! = new BBjVector()
+4300         scopeVec!.addItem("EMPLOYEE_ID")
+4310         scopeVec!.addItem("EM_NAME_PREFIX")
+4320         scopeVec!.addItem("EM_NAME")
+4330         scopeVec!.addItem("EM_FIRST_NAME")
+4340         if #servicePack>15.04
+4350 			scopeVec!.addItem("TAPI_CODE")
+4360 			scopeVec!.addItem("TAPI_DESC")
+4370 		fi
+4380         scopes!.put("T",scopeVec!)
+
+4390         scopeVec! = new BBjVector()
+4400         scopeVec!.addItem("USR_COMP_ID")
+4410         scopeVec!.addItem("USR_BRANCH_ID")
+4420         scopeVec!.addItem("USR_SAL_ID")
+4430         scopeVec!.addItem("USR_WHS_ID")
+4440         scopeVec!.addItem("USR_WKS_ID")
+4450         scopes!.put("U",scopeVec!)
+
+4460         REM /** (S)ynchronize scope - Syncs the Data using API */ 
+4470         scopeVec! = new BBjVector()
+4480         scopeVec!.add("EM_FULL_NAME")
+4490         REM CARIT-13887 :==> CARIT-14007 Changed Employee_ID case to UpperCase as it is not valid in BBj23 if it is not uppercase
+4500         scopeVec!.add("EMPLOYEE_ID")
+4510         scopeVec!.add("EM_LOGIN_NAME")
+4520         scopeVec!.add("EM_PASSWORD")
+4530         scopeVec!.add("EM_EMAIL_BUS")
+4540         scopeVec!.add("EM_MOB_BUS")
+4550         scopeVec!.add("EM_ACTIVE_YN")
+4560         scopeVec!.add("EM_DEP_CODE")
+4570         scopeVec!.add("USR_WHS_ID")
+4580         scopeVec!.add("EM_TEN_STA_DATE")
+4590         scopeVec!.add("EM_TEN_END_DATE")
+4600         REM CARIT-13887 iConnect - Change synchronization of employees
+4610         scopeVec!.add("EM_PROD_FACTOR")
+4620         scopeVec!.add("EM_RED_FACTOR")
+4630         scopeVec!.add("COMP_ID")
+4640         scopeVec!.add("BRANCH_ID")
+4650         scopeVec!.add("WKS_ID")
+4660         scopeVec!.add("ME_GROUP")
+4670         scopeVec!.add("WEEKSCHEDULES")
+4680         scopeVec!.add("WEEK_SCHE_ID")
+4690 		FOR cnt=1 TO 53
+4700 			strAttrName$="WEEK_SCHE_ID_"+STR(cnt)
+4710 			scopeVec!.add(strAttrName$)
+4720 		NEXT cnt
+4730 		scopeVec!.add("DEPARTMENTS")
+4740 		REM EM_SUBDRGHT_IND is put in scope temporarlily for getting workshop default status
+4750 		scopeVec!.add("EM_SUBDRGHT_IND")
+4760 		scopeVec!.add("ARS_GRP_ID")
+4770         scopes!.put("S",scopeVec!)
+
+4780         #super!.setScopeDef(scopes!)
+4790         #super!.setScope("D")
+
+4800     methodend
+
+
+4810     REM /**
+4820 	REM  * Retrieves a ResultSet with DataRow's.
+4830 	REM  * If a filter is set, this will be applied to filter the result.
+4840 	REM  * If a scope and/or a field selection is set, it will be used to retrieve the desired fields.	
+4850 	REM  * @return ResultSet containing found DataRows selected via setFilter before. This ResultSet is never null(). Verify its size() for inhouse validation.
+4860 	REM  */
+4870     method public ResultSet retrieve()
+4880         #info("EmployeesBC - retrieve")
+4890     	declare DataRow drFilter!
+4900     	declare ResultSet rsResult!
+4910     	declare Iterator it!
+4920     	declare DataRow dr!
+4930     	declare ResultSet rsTemp!
+4940 		drFilter! = #super!.getFilter(err=*next)
+
+4950        	rsResult!=#super!.retrieve()
+
+4960     	if rsResult!.size()
+
+4970     	    if #servicePack>15.04
+4980 				REM /** TAPI SCOPE */
+4990 				if #super!.getScope().contains("T") then
+5000 					it!=rsResult!.iterator()
+5010 					while it!.hasNext()
+5020 						dr!=cast(DataRow,it!.next())
+5030 						TAPI_CODE$=dr!.getFieldAsString("TAPI_CODE",err=*next)
+5040 						if cvs(TAPI_CODE$,2)=""
+5050 							TAPI_CODE$="   0"; REM all options
+5060 							dr!.setFieldValue("TAPI_CODE",TAPI_CODE$)
+5070 							dr!.setFieldValue("TAPI_DESC",#tapi_desc_all$); REM Index TAPI, Id '   0'
+5080 						fi
+5090 					wend
+5100 				fi
+5110 			fi
+
+5120     	    if #super!.getScope().contains("E") then
+
+5130   				declare DataRow drTemp!
+5140   				declare DataRow drTemp1!
+
+5150     			for i=0 to rsResult!.size()-1
+5160     				drTemp! = rsResult!.get(i)
+
+5170     				strLoginEmployeeId$ = drTemp!.getFieldAsString("EMPLOYEE_ID",ERR=*next)
+5180     				numSubdrghtInd = drTemp!.getFieldAsNumber("EM_SUBDRGHT_IND",ERR=*next)
+
+5190     				numSalDep=0
+5200     				numWhsDep=0
+5210     				numWksDep=0
+
+5220     				sql$ = " SELECT "
+5230     				sql$=sql$+" TMSEMPFUNC.EM_FUNC_KOF "
+5240     				sql$=sql$+" FROM [TMSEMPFUNC]  "
+5250     				sql$=sql$+" INNER JOIN [EMPLOYEEEMPFUNC]  ON TMSEMPFUNC.EM_FUNC_ID =EMPLOYEEEMPFUNC.EM_FUNC_ID   "
+5260     				sql$=sql$+" WHERE EMPLOYEE_ID=?  "
+5270     				strParam$=strLoginEmployeeId$
+5280     				rsTemp!=#super!.query(sql$,strParam$)
+5290     				if rsTemp!.size() then
+5300     					for j=0 to rsTemp!.size()-1
+5310     						drTemp1! = rsTemp!.get(j)
+5320     						if (drTemp1!.getFieldAsString("EM_FUNC_KOF")="   2") then
+5330     							numSalDep=1
+5340     						endif
+5350     						if (drTemp1!.getFieldAsString("EM_FUNC_KOF")="   4") then
+5360     							numWhsDep=1
+5370     						endif
+5380     						if (drTemp1!.getFieldAsString("EM_FUNC_KOF")="   3") or (drTemp1!.getFieldAsString("EM_FUNC_KOF")="   5") then
+5390     							numWksDep=1
+5400     						endif
+5410     					next j
+5420     				endif
+
+5430     				if !(numSalDep=0 and numWhsDep=0 and numWksDep=0) then
+5440         				if numSubdrghtInd then
+5450         					sql$ = " SELECT "
+5460         					sql$=sql$+" * "
+5470         					sql$=sql$+" FROM "
+5480         					sql$=sql$+" EMPSUBDIVDEF "
+5490         					sql$=sql$+" WHERE EMPLOYEE_ID=? "
+5500         					strParam$=strLoginEmployeeId$
+5510         				else
+5520         					sql$ = " SELECT "
+5530         					sql$=sql$+" * "
+5540         					sql$=sql$+" FROM "
+5550         					sql$=sql$+" ARUSUBDIVDEF "
+5560         					sql$=sql$+" WHERE ARS_GRP_ID=? "
+5570         					strParam$=drTemp!.getFieldAsString("ARS_GRP_ID")
+5580         				endif
+
+5590         				if drFilter!<>null() and drFilter!.contains("COMP_ID") then
+5600         					sql$=sql$+" and COMP_ID=? "
+5610         					strParam$=strParam$+","+drFilter!.getFieldAsString("COMP_ID")
+5620         				endif
+5630         				if drFilter!<>null() and drFilter!.contains("BRANCH_ID") then
+5640         					sql$=sql$+" and BRANCH_ID=? "
+5650         					strParam$=strParam$+","+drFilter!.getFieldAsString("BRANCH_ID")
+5660         				endif
+5670         				sql$=sql$+" ORDER BY COMP_ID,BRANCH_ID,WHS_ID,WKS_ID,SAL_ID "
+
+5680         				rsTemp! = #super!.query(sql$,strParam$)
+5690         				if rsTemp!.size() then
+5700         					for j=0 to rsTemp!.size()-1
+5710         						drTemp1! = rsTemp!.get(j)
+5720         						if numSalDep=1 and (drTemp1!.getFieldAsString("SAL_ID")<> "   ")  then
+5730         							drTemp!.setFieldValue("DEF_COMP_ID",drTemp1!.getFieldAsString("COMP_ID"))
+5740         							drTemp!.setFieldValue("DEF_BRANCH_ID",drTemp1!.getFieldAsString("BRANCH_ID"))
+5750         							drTemp!.setFieldValue("DEF_SAL_ID",drTemp1!.getFieldAsString("SAL_ID"))
+5760         							Continue
+5770         						endif
+5780         						if numWksDep=1 and (drTemp1!.getFieldAsString("WKS_ID")<> "   ") then
+5790         							drTemp!.setFieldValue("DEF_COMP_ID",drTemp1!.getFieldAsString("COMP_ID"))
+5800         							drTemp!.setFieldValue("DEF_BRANCH_ID",drTemp1!.getFieldAsString("BRANCH_ID"))
+5810         							drTemp!.setFieldValue("DEF_WKS_ID",drTemp1!.getFieldAsString("WKS_ID"))
+5820         							Continue
+5830         						endif
+5840         						if numWhsDep=1 and (drTemp1!.getFieldAsString("WHS_ID")<> "   ") then
+5850         							drTemp!.setFieldValue("DEF_COMP_ID",drTemp1!.getFieldAsString("COMP_ID"))
+5860         							drTemp!.setFieldValue("DEF_WHS_ID",drTemp1!.getFieldAsString("WHS_ID"))
+5870         							Continue
+5880         						endif
+5890         					next j
+5900         				endif
+5910     				fi
+
+5920   					if #super!.getScope().contains("U")
+5930   					    DEF_COMP_ID$=drTemp!.getFieldAsString("DEF_COMP_ID")
+5940   					    DEF_BRANCH_ID$=drTemp!.getFieldAsString("DEF_BRANCH_ID")
+5950   					    DEF_WHS_ID$=drTemp!.getFieldAsString("DEF_WHS_ID")
+5960   					    DEF_WKS_ID$=drTemp!.getFieldAsString("DEF_WKS_ID")
+5970   					    DEF_SAL_ID$=drTemp!.getFieldAsString("DEF_SAL_ID")
+5980   					    if cvs(DEF_COMP_ID$,2)=$$ then drTemp!.setFieldValue("DEF_COMP_ID",drTemp!.getFieldAsString("USR_COMP_ID"))
+5990   					    if cvs(DEF_BRANCH_ID$,2)=$$ then drTemp!.setFieldValue("DEF_BRANCH_ID",drTemp!.getFieldAsString("USR_BRANCH_ID"))
+6000   					    if cvs(DEF_WHS_ID$,2)="" then drTemp!.setFieldValue("DEF_WHS_ID",drTemp!.getFieldAsString("USR_WHS_ID"))
+6010   					    if cvs(DEF_WKS_ID$,2)="" then drTemp!.setFieldValue("DEF_WKS_ID",drTemp!.getFieldAsString("USR_WKS_ID"))
+6020   					    if cvs(DEF_SAL_ID$,2)="" then drTemp!.setFieldValue("DEF_SAL_ID",drTemp!.getFieldAsString("USR_SAL_ID"))
+6030       				    drTemp!.removeField("USR_COMP_ID")
+6040       				    drTemp!.removeField("USR_BRANCH_ID")
+6050       				    drTemp!.removeField("USR_WHS_ID")
+6060       				    drTemp!.removeField("USR_SAL_ID")
+6070       				    drTemp!.removeField("USR_WKS_ID")
+6080    					fi
+
+6090     			next i
+
+6100     		fi
+6110     		REM CARIT-13887 iConnect - Change synchronization of employees
+6120     	    if #super!.getScope().contains("S") then
+
+6130 				declare DataRow drEmployee!
+6140 				drEmployee!= new DataRow()
+6150 				declare DataRow drWeekShedule!
+6160 				drWeekShedule! = new DataRow()
+6170 				declare ResultSet rsDepartments!
+6180 				rsDepartments! = new ResultSet()
+6190 				declare DataRow drDepartments!
+6200 				drDepartments! =  new DataRow()
+6210 				declare DataRow drFunctions!
+6220 				drFunctions! =  new DataRow()
+6230 				declare ResultSet rsFunctions!
+6240 				rsFunctions! = new ResultSet()
+
+6250     	    	for iRecord=0 to rsResult!.size()-1
+
+6260 					drEmployee!=rsResult!.get(iRecord)
+6270 					REM restructure WEEKSCHEDULES to make it as a separate group of columns values by removing from main scpe and adding it as a dr!
+6280 					drEmployee!.removeField("WEEKSCHEDULES")
+6290 					FOR cnt=1 TO 53
+6300 						strAttrName$="WEEK_SCHE_ID_"+STR(cnt)
+6310 						drWeekShedule!.setFieldValue(strAttrName$,drEmployee!.getFieldAsString(strAttrName$))
+6320 					NEXT cnt
+6330 					drWeekShedule!.setFieldValue("WEEK_SCHE_ID",drEmployee!.getFieldAsString("WEEK_SCHE_ID"))
+6340 					drEmployee!.setFieldValue("WEEKSCHEDULES",drWeekShedule!)
+6350 					REM Remove the WEEK_SCHE_ID and WEEK_SCHE_ID_1...53 Fields from scope as it is already made into a collection called WEEKSCHEDULES
+6360 					drEmployee!.removeField("WEEK_SCHE_ID")
+6370 					FOR cnt=1 TO 53
+6380 							strAttrName$="WEEK_SCHE_ID_"+STR(cnt)
+6390 							drEmployee!.removeField(strAttrName$)
+6400 					NEXT cnt
+6410 					REM Structure Departments and Functions
+6420 					EMPLOYEE_WKS_ID$= drEmployee!.getFieldAsString("WKS_ID")
+6430 					drEmployee!.removeField("DEPARTMENTS")
+6440 					sql$ = " SELECT DISTINCT a.COMP_ID, a.BRANCH_ID, a.WHS_ID, a.WKS_ID, a.SAL_ID, '' AS ""DEFAULT"" "
+6450 					sql$ = sql$+" FROM ARUEMPFUNCRGHT as a"
+6460 					sql$ = sql$+" WHERE a.EMPLOYEE_ID='"+drEmployee!.getFieldAsString("EMPLOYEE_ID")+"' "
+6470 					sql$ = sql$+" ORDER BY a.COMP_ID, a.BRANCH_ID, a.WHS_ID, a.WKS_ID, a.SAL_ID"
+6480 					rsDepartments!= dbutils.query(sql$)
+6490 					if rsDepartments!.size() > 0  then
+6500 						for iDept=0 to rsDepartments!.size()-1
+6510 							drDepartments! = rsDepartments!.get(iDept)
+6520 							rsTemp! = new ResultSet()
+6530 							DEPARTMENT_WKS_ID$ = drDepartments!.getFieldAsString("WKS_ID")
+6540 							if CVS(EMPLOYEE_WKS_ID$,3)<>"" then
+6550 								if CVS(EMPLOYEE_WKS_ID$,3)=CVS(DEPARTMENT_WKS_ID$,3) then
+6560 									REM When WKS_ID in the main section is filled and equal to the WKS_ID in the "DEPARTMENTS" section -> “DEFAULT”: “true” when filled and unequal to the WKS_ID in the main section -> “DEFAULT”: “false”
+6570 									drDepartments!.setFieldValue("DEFAULT","true")
+6580 								else
+6590 									drDepartments!.setFieldValue("DEFAULT","false")
+6600 								endif
+6610 							else
+6620 								REM When WKS_ID in the main section is empty and “Sub division rights indicator” (EMPLOYEE. EM_SUBDRGHT_IND) = 0 
+6630 								REM and there is a record available in the table “User default sub division” (ARUSUBDIVDEF) for EMPLOYEE. ARS_GRP_ID + ARUEMPFUNCRGHT.COMP_ID + ARUEMPFUNCRGHT. BRANCH_ID + ARUEMPFUNCRGHT.WHS_ID + ARUEMPFUNCRGHT.WKS_ID + ARUEMPFUNCRGHT.SAL_ID -> “DEFAULT”: “true”. 
+6640 								REM When there is no record available -> “DEFAULT”: “false”
+6650 								numSubdrghtInd = drEmployee!.getFieldAsNumber("EM_SUBDRGHT_IND",ERR=*next)
+6660 								if numSubdrghtInd =0 then
+6670 									sql$= "SELECT * FROM ARUSUBDIVDEF "
+6680 									sql$ = sql$+" WHERE ARUSUBDIVDEF.ARS_GRP_ID='"+drEmployee!.getFieldAsString("ARS_GRP_ID")+"' "
+6690 									sql$ = sql$+" AND ARUSUBDIVDEF.COMP_ID='"+drDepartments!.getFieldAsString("COMP_ID")+"' "
+6700 									sql$ = sql$+" AND ARUSUBDIVDEF.BRANCH_ID='"+drDepartments!.getFieldAsString("BRANCH_ID")+"' "
+6710 									sql$ = sql$+" AND ARUSUBDIVDEF.WHS_ID='"+drDepartments!.getFieldAsString("WHS_ID")+"' "
+6720 									sql$ = sql$+" AND ARUSUBDIVDEF.SAL_ID='"+drDepartments!.getFieldAsString("SAL_ID")+"' "
+6730 									sql$ = sql$+" AND ARUSUBDIVDEF.WKS_ID='"+drDepartments!.getFieldAsString("WKS_ID")+"' "
+6740 									rsTemp! = dbutils.query(sql$)
+6750 									if rsTemp!.size() > 0  then
+6760 										drDepartments!.setFieldValue("DEFAULT","true")
+6770 									else
+6780 										drDepartments!.setFieldValue("DEFAULT","false")
+6790 									endif
+6800 								else
+6810 									if numSubdrghtInd =1
+6820 										REM When WKS_ID in the main section is empty and “Sub division rights indicator” (EMPLOYEE. EM_SUBDRGHT_IND) = 1 
+6830 										REM and there is a record available in the table “Employee default sub division” (EMPSUBDIVDEF) for EMPLOYEE. EMPLOYEE_ID + ARUEMPFUNCRGHT.COMP_ID + ARUEMPFUNCRGHT. BRANCH_ID + ARUEMPFUNCRGHT.WHS_ID + ARUEMPFUNCRGHT.WKS_ID + ARUEMPFUNCRGHT.SAL_ID -> “DEFAULT”: “true”.
+6840 										REM When there is no record available -> “DEFAULT”: “false”
+6850 										sql$= "SELECT * FROM EMPSUBDIVDEF "
+6860 										sql$ = sql$+" WHERE EMPSUBDIVDEF.EMPLOYEE_ID='"+drEmployee!.getFieldAsString("EMPLOYEE_ID")+"' "
+6870 										sql$ = sql$+" AND EMPSUBDIVDEF.COMP_ID='"+drDepartments!.getFieldAsString("COMP_ID")+"' "
+6880 										sql$ = sql$+" AND EMPSUBDIVDEF.BRANCH_ID='"+drDepartments!.getFieldAsString("BRANCH_ID")+"' "
+6890 										sql$ = sql$+" AND EMPSUBDIVDEF.WHS_ID='"+drDepartments!.getFieldAsString("WHS_ID")+"' "
+6900 										sql$ = sql$+" AND EMPSUBDIVDEF.SAL_ID='"+drDepartments!.getFieldAsString("SAL_ID")+"' "
+6910 										sql$ = sql$+" AND EMPSUBDIVDEF.WKS_ID='"+drDepartments!.getFieldAsString("WKS_ID")+"' "
+6920 										rsTemp! = dbutils.query(sql$)
+6930 										if rsTemp!.size() > 0  then
+6940 											drDepartments!.setFieldValue("DEFAULT","true")
+6950 										else
+6960 											drDepartments!.setFieldValue("DEFAULT","false")
+6970 										endif
+6980 									endif
+6990 								endif
+7000 							endif
+7010 							sql$ = " SELECT EM_FUNC_KOF, f.EM_FUNC_DESCR"
+7020 							sql$ = sql$+" FROM ARUEMPFUNCRGHT as a"
+7030 							sql$ = sql$+" LEFT JOIN TMSEMPFUNC as f on f.EM_FUNC_ID=a.EM_FUNC_ID"
+7040 							sql$ = sql$+" WHERE a.COMP_ID='"+drDepartments!.getFieldAsString("COMP_ID")+"' AND a.BRANCH_ID='"+drDepartments!.getFieldAsString("BRANCH_ID")+"' AND a.WHS_ID='"+drDepartments!.getFieldAsString("WHS_ID")+"' AND a.WKS_ID='"+drDepartments!.getFieldAsString("WKS_ID")+"' "
+7050 							sql$ = sql$+" AND a.EMPLOYEE_ID='"+drEmployee!.getFieldAsString("EMPLOYEE_ID")+"' "
+7060 							sql$ = sql$+" ORDER BY a.COMP_ID, a.BRANCH_ID, a.WHS_ID, a.WKS_ID"
+7070 							rsFunctions!= dbutils.query(sql$)
+7080 							drDepartments!.setFieldValue("FUNCTIONS",rsFunctions!)
+7090 						next iDept
+7100 					else
+7110 						rsDepartments!=new ResultSet()
+7120 					endif
+7130 					drEmployee!.setFieldValue("DEPARTMENTS",rsDepartments!)
+
+7140 				next iRecord
+7150 				REM EM_SUBDRGHT_IND is not required to be in S  scope after the usage in getting other relevant data
+7160 				drEmployee!.removeField("EM_SUBDRGHT_IND")
+7170 				drEmployee!.removeField("ARS_GRP_ID")
+7180   			endif
+
+7190 		endif
+7200 		REM rsResult!.add(drTemp!)
+7210 		methodret rsResult!
+7220 	methodend
+
+
+7230     rem /**
+7240     rem  * Set a filter for the search result.<br>
+7250     rem  * If the filter is set it will be used in the retrieve method.<br>
+7260     rem  * If no filter is set, the retrieve method will return all data.
+7270     rem  * @see    #retrieve()
+7280     rem  * @param  filter! a DataRow including field names and values to filter for. Filters are <u>AND</u> combined.
+7290     rem  */
+7300     method public void setFilter(DataRow filter!)
+7310         #info("EmployeesBC - setFilter - "+str(filter!))
+7320         if filter! <> null() and filter!.contains("EMPLOYEE_ID") then
+7330             filter!.setFieldValue("EMPLOYEE_ID",pad(filter!.getFieldAsString("EMPLOYEE_ID"),12,"R"))
+7340         endif
+7350         #super!.setFilter(filter!)
+
+7360     methodend
+
+
+
+7370     REM /**
+7380     REM  * Sets a field selection scope (A, B, C, etc.).
+7390     REM  * By no or a wrong scope, all fields will be returned.
+7400     REM  * @param BBjString scope
+7410     REM  */
+7420     method public void setScope(BBjString scope$)
+7430         if #servicePack>15.04
+7440 			if cast(BBjString,scope$).contains("T")
+7450 				if #tapi_desc_all$=""
+7460 					#tapi_desc_all$=TextsBC.txtDescr("TAPI","   0"); REM system INDEX TAPI; "   0" = all options
+7470 				fi
+7480 			fi
+7490 		fi
+7500         #super!.setScope(scope$)
+7510     methodend
+
+
+
+7520     REM /** 
+7530     REM  * Detects if the current stbl('USERID') is an administrator. 
+7540     REM  * @return Boolean if the employee is an admin or not.
+7550     REM  */ 
+7560     method public static Boolean isAdmin()
+7570         declare EmployeesBC ebc!
+7580         declare ResultSet rs!
+7590         declare DataRow dr!
+7600         declare Boolean state!
+7610         state!=Boolean.FALSE
+7620         USERID$=stbl("USERID",err=*next)
+7630         if cvs(USERID$,3)=""
+7640            throw "Unable to get a valid value of the string table entry USERID.",301
+7650         else
+7660           ebc!=new EmployeesBC()
+7670           dr!=new DataRow()
+7680           dr!.setFieldValue("USERID",USERID$)
+7690           ebc!.setScope("E")
+7700           ebc!.setFilter(dr!)
+7710           rs!=ebc!.retrieve()
+7720           if rs!.size()
+7730               state!=rs!.get(0).getField("IS_ADMIN").getBoolean()
+7740           fi
+7750           ebc!.closeDatabase()
+7760         fi
+7770         methodret state!
+7780     methodend
+
+
+7790     REM /** 
+7800     REM  * Detects if an employee is an administrator. Do not call this method in a loop! Then retrieve instead all employees including scope E and filter by employee id explicitely and check the IS_ADMIN field.
+7810     REM  * @param BBjString of the employee id. This employee id will be reformated by the subroutine. Hence solely a trimmed BBjString value is acceppted..
+7820     REM  * @return Boolean if the employee is an admin or not.
+7830     REM  */ 
+7840     method public Boolean isAdmin(BBjString EMPLOYEE_ID$)
+7850         declare EmployeesBC bc!
+7860         declare ResultSet rs!
+7870         declare DataRow dr!
+7880         declare Boolean state!
+7890         bc! = new EmployeesBC()
+7900         dr! = new DataRow()
+7910         bc!.setScope("E")
+7920         dr!.setFieldValue("EMPLOYEE_ID",#super!.ensureFormat(EMPLOYEE_ID$,12))
+7930         bc!.setFilter(dr!)
+7940         rs!=bc!.retrieve()
+7950         if rs!.size()
+7960             state!=rs!.get(0).getField("IS_ADMIN").getBoolean()
+7970         fi
+7980         bc!.closeDatabase()
+7990         methodret state!
+8000     methodend
+
+8010     REM /**
+8020 	REM  * Get simple employee department permissions.
+8030 	REM  * @param BBjString Employee id
+8040 	REM  * @return HashMap of KEYS [SalAllowed, WksAllowed, WhsAllowed] and values [ 0, 1]
+8050 	REM  */
+8060     method public HashMap retrieveAllowed(BBjString EmployeeID$)
+8070     	 declare java.util.HashMap map!
+8080     	 declare DataRow stmtValues!
+8090     	 declare ResultSet rsTemp!
+
+8100     	stmtValues! = new DataRow()
+8110     	rsTemp! = new ResultSet()
+8120     	map!=new HashMap()
+
+8130     	sql$ = " SELECT * FROM EMPLOYEEEMPFUNC INNER JOIN [TMSEMPFUNC]  ON TMSEMPFUNC.EM_FUNC_ID =EMPLOYEEEMPFUNC.EM_FUNC_ID "
+8140 		sql$=sql$+" WHERE TMSEMPFUNC.EM_FUNC_KOF='   2'and EMPLOYEE_ID=? "
+8150 		stmtValues!.setFieldValue("EMPLOYEE_ID",EmployeeID$)
+8160 		sql$=sql$+" ORDER BY EMPLOYEE_ID"
+8170 		rsTemp! = #super!.retrieve(sql$,stmtValues!)
+8180 		if rsTemp!<>null() and rsTemp!.size()>0 then
+8190 			map!.put("SalAllowed","1")
+8200 		else
+8210 			map!.put("SalAllowed","0")
+8220 		endif
+
+8230     	sql$ = " SELECT * FROM EMPLOYEEEMPFUNC INNER JOIN [TMSEMPFUNC]  ON TMSEMPFUNC.EM_FUNC_ID =EMPLOYEEEMPFUNC.EM_FUNC_ID "
+8240 		sql$=sql$+" WHERE (TMSEMPFUNC.EM_FUNC_KOF='   3' or TMSEMPFUNC.EM_FUNC_KOF='   5') and EMPLOYEE_ID=? "
+8250 		stmtValues! = new DataRow()
+8260 		stmtValues!.setFieldValue("EMPLOYEE_ID",EmployeeID$)
+8270 		sql$=sql$+" ORDER BY EMPLOYEE_ID"
+8280 		rsTemp! = #super!.retrieve(sql$,stmtValues!)
+8290 		if rsTemp!<>null() and rsTemp!.size()>0 then
+8300 			map!.put("WksAllowed","1")
+8310 		else
+8320 			map!.put("WksAllowed","0")
+8330 		endif
+
+8340 		sql$ = " SELECT * FROM EMPLOYEEEMPFUNC INNER JOIN [TMSEMPFUNC]  ON TMSEMPFUNC.EM_FUNC_ID =EMPLOYEEEMPFUNC.EM_FUNC_ID "
+8350 		sql$=sql$+" WHERE TMSEMPFUNC.EM_FUNC_KOF='   4' and EMPLOYEE_ID=? "
+8360 		stmtValues! = new DataRow()
+8370 		stmtValues!.setFieldValue("EMPLOYEE_ID",EmployeeID$)
+8380 		sql$=sql$+" ORDER BY EMPLOYEE_ID"
+8390 		rsTemp! = #super!.retrieve(sql$,stmtValues!)
+8400 		if rsTemp!<>null() and rsTemp!.size()>0 then
+8410 			map!.put("WhsAllowed","1")
+8420 		else
+8430 			map!.put("WhsAllowed","0")
+8440 		endif
+8450 		methodret map!
+8460     methodend
+
+
+8470     REM /**
+8480 	REM  * Get function per employee.
+8490 	REM  * @param BBjString of the employee id
+8500 	REM  * @param BBjNumber of the control func type
+8510 	REM  *        if control func type is 0, look up for EM_FUNC_KOF of '   2' for this employee and get back numFuncType=1 if exists
+8520 	REM  *        if control func type is any NOT 0, look up for EM_FUNC_KOF of '   3' or '   5' for this employee and get back numFuncType=2 if exists
+8530 	REM  *        if control func type is any NOT 0 and look up for EM_FUNC_KOF of '   3' or '   5' failed, then look up for EM_FUNC_KOF of '   4' and get back numFuncType=3 if exists, otherwise numFuncType=1
+8540 	REM  * @return BBjNumber of numFuncType [1,2,3] composed by the previous described logic 
+8550 	REM  */
+8560     method public BBjNumber retrieveDefFunction(BBjString EmployeeID$,BBjNumber numFuncType)
+
+8570     	declare DataRow stmtValues!
+8580     	declare ResultSet rsTemp!
+
+8590     	stmtValues! = new DataRow()
+8600     	rsTemp! = new ResultSet()
+
+8610     	if numFuncType =0 then
+8620 			sql$ = " SELECT * FROM EMPLOYEEEMPFUNC INNER JOIN [TMSEMPFUNC]  ON TMSEMPFUNC.EM_FUNC_ID =EMPLOYEEEMPFUNC.EM_FUNC_ID "
+8630 			sql$=sql$+" WHERE TMSEMPFUNC.EM_FUNC_KOF='   2'and EMPLOYEE_ID=? "
+8640 			stmtValues!.setFieldValue("EMPLOYEE_ID",EmployeeID$)
+8650 			sql$=sql$+" ORDER BY EMPLOYEE_ID"
+8660 			rsTemp! = #super!.retrieve(sql$,stmtValues!)
+8670 			if rsTemp!<>null() and rsTemp!.size()>0 then
+8680 				numFuncType=1
+8690 			endif
+8700 		else
+8710 			sql$ = " SELECT * FROM EMPLOYEEEMPFUNC INNER JOIN [TMSEMPFUNC]  ON TMSEMPFUNC.EM_FUNC_ID =EMPLOYEEEMPFUNC.EM_FUNC_ID "
+8720 			sql$=sql$+" WHERE (TMSEMPFUNC.EM_FUNC_KOF='   3' or TMSEMPFUNC.EM_FUNC_KOF='   5') and EMPLOYEE_ID=? "
+8730 			stmtValues! = new DataRow()
+8740 			stmtValues!.setFieldValue("EMPLOYEE_ID",EmployeeID$)
+8750 			sql$=sql$+" ORDER BY EMPLOYEE_ID"
+8760 			rsTemp! = #super!.retrieve(sql$,stmtValues!)
+8770 			if rsTemp!<>null() and rsTemp!.size()>0 then
+8780 				numFuncType=2
+8790 			else
+8800 				sql$ = " SELECT * FROM EMPLOYEEEMPFUNC INNER JOIN [TMSEMPFUNC]  ON TMSEMPFUNC.EM_FUNC_ID =EMPLOYEEEMPFUNC.EM_FUNC_ID "
+8810 				sql$=sql$+" WHERE TMSEMPFUNC.EM_FUNC_KOF='   4' and EMPLOYEE_ID=? "
+8820 				stmtValues! = new DataRow()
+8830 				stmtValues!.setFieldValue("EMPLOYEE_ID",EmployeeID$)
+8840 				sql$=sql$+" ORDER BY EMPLOYEE_ID"
+8850 				rsTemp! = #super!.retrieve(sql$,stmtValues!)
+8860 				if rsTemp!<>null() and rsTemp!.size()>0 then
+8870 					numFuncType=3
+8880 				else
+8890 					numFuncType=1
+8900 				endif
+8910 			endif
+8920 		endif
+
+8930 	    methodret numFuncType
+8940 	methodend
+
+
+8950     REM /** 
+8960     REM  * Returns the recordset with employeeID's and names having the given kind of functions.
+8970     REM  * @param BBjString strKOF$ Comma seperated string of Kind of functions. Example :"'   1','   3'" Will return all the employees with KOF Mechanic and Repionist planning.
+8980     REM  * @param BBjString strCompId!
+8990     REM  * @param BBjString strBranchId!
+9000     REM  * @param BBjString strWhs!
+9010     REM  * @param BBjString strWksd!
+9020     REM  * @param BBjString strSalId!
+9030     REM  * @return ResultSet 
+9040     REM  */ 
+9050     method public static ResultSet retrieveEmployeesByKOF(BBjString strKOF!,BBjString strCompId!,BBjString strBranchId!,BBjString strWhs!,BBjString strWksd!,BBjString strSalId!)
+
+9060     	declare BBjString strWh$
+9070     	declare ResultSet rs!
+
+9080     	rs!= new ResultSet()
+
+
+9090 	    sql$=" SELECT DISTINCT E.EMPLOYEE_ID as ID, EM_TEAM,REPLACE((TRIM(E.EM_NAME)+' '+TRIM(E.EM_FIRST_NAME)+' '+TRIM(E.EM_NAME_PREFIX)),'  ','') AS DESC FROM EMPLOYEE as E"
+9100 	    sql$=sql$+" LEFT JOIN ARUEMPFUNCRGHT as AEFR on E.EMPLOYEE_ID=AEFR.EMPLOYEE_ID"
+9110 	    sql$=sql$+" LEFT JOIN TMSEMPFUNC as TEF on TEF.EM_FUNC_ID=AEFR.EM_FUNC_ID"
+9120 	    sql$=sql$+" WHERE E.EM_ACTIVE_YN=1 "
+9130 	    if strKOF!.contains(",") then
+9140 			strWh$=" AND TEF.EM_FUNC_KOF IN ("+strKOF!+")"
+9150 	    else
+9160 	    	strWh$=" AND TEF.EM_FUNC_KOF='"+strKOF!+"'"
+9170 	    endif
+9180 	    sql$=sql$+strWh$
+9190 	    if strCompId!<>"" then
+9200 	    	sql$=sql$+" AND AEFR.COMP_ID='"+strCompId!+"'"
+9210 	    endif
+9220 	    if strBranchId!<>"" then
+9230 	    	sql$=sql$+" AND AEFR.BRANCH_ID='"+strBranchId!+"'"
+9240 	    endif
+9250 	    if strWhs!<>"" then
+9260 	    	sql$=sql$+" AND AEFR.WHS_ID='"+strWhs!+"'"
+9270 	    endif
+9280 	    if strWksd!<>"" then
+9290 	    	sql$=sql$+" AND AEFR.WKS_ID='"+strWksd!+"'"
+9300 	    endif
+9310 	    if strSalId!<>"" then
+9320 	    	sql$=sql$+" AND AEFR.SAL_ID='"+strSalId!+"'"
+9330 	    endif
+9340 	    sql$=sql$+" ORDER BY DESC"
+
+9350 	    rs!=TableBC.query(sql$)
+
+9360 	    methodret rs!
+
+9370     methodend
+
+9380     REM /** 
+9390     REM  * Returns the recordset with employeeID's and names having the given kind of functions.
+9400     REM  * @param BBjString strKOF$ Comma seperated string of Kind of functions. Example :"'   1','   3'" Will return all the employees with KOF Mechanic and Repionist planning.
+9410     REM  * @return ResultSet 
+9420     REM  */ 
+9430     method public static ResultSet retrieveEmployeesByKOF(BBjString strKOF!)
+
+9440     	declare BBjString strWh1$
+9450     	declare ResultSet rs!
+
+9460     	rs!=new ResultSet()
+9470 	    strSql$=" SELECT DISTINCT EMPLOYEEEMPFUNC.EMPLOYEE_ID,EMPLOYEE.EM_FULL_NAME FROM EMPLOYEEEMPFUNC INNER JOIN [TMSEMPFUNC] ON TMSEMPFUNC.EM_FUNC_ID =EMPLOYEEEMPFUNC.EM_FUNC_ID "
+9480 	    strSql$=strSql$+" INNER JOIN [EMPLOYEE] ON EMPLOYEE.EMPLOYEE_ID=EMPLOYEEEMPFUNC.EMPLOYEE_ID WHERE EM_ACTIVE_YN=1 "
+9490 	    if strKOF!.contains(",") then
+9500 			strWh1$=" AND TMSEMPFUNC.EM_FUNC_KOF IN ("+strKOF!+") "
+9510 	    else
+9520 	    	strWh1$=" AND TMSEMPFUNC.EM_FUNC_KOF='"+strKOF!+"'"
+9530 	    endif
+
+9540 	    strSql$=strSql$+strWh1$
+9550 	    strSql$=strSql$+" ORDER BY EMPLOYEE.EM_FULL_NAME "
+9560 	    rs!=TableBC.query(strSql$)
+
+9570 	  methodret rs!
+
+9580     methodend
+
+
+9590     REM /**
+9600     REM  * retrieve all active employees regardless of any scope definition.
+9610     REM  * Employees gonna be selected with the active status equals true and where the tenure start and end date are valid.
+9620     REM  * @return ResultSet with all employees records.  
+9630     REM  */
+9640     method public static ResultSet retrieveAllActiveEmployees()
+9650         REM /** SELECT count(*) FROM EMPLOYEE AS e WHERE e.EM_ACTIVE_YN=1 AND e.EM_TEN_STA_DATE<='2019-11-18' AND (e.EM_TEN_END_DATE>='2019-11-18' OR e.EM_TEN_END_DATE IS NULL) */
+9660         declare TableBC tbc!
+9670         declare DataRow filter!
+9680         declare ResultSet rs!
+9690         declare Iterator it!
+9700         now$=date(0:"%Yl-%Mz-%Dz")
+9710         tbc!=new TableBC("EMPLOYEE",1)
+9720         filter!=new DataRow()
+9730         filter!.setFieldValue("EM_ACTIVE_YN",1)
+9740         filter!.setFieldValue("EM_TEN_STA_DATE","cond:<="+now$)
+9750         filter!.setFieldValue("EM_TEN_END_DATE","cond:>="+now$+"|<"+now$)
+9760         tbc!.setFilter(filter!)
+9770         rs!=tbc!.retrieve()
+9780         tbc!.closeDatabase()
+9790         methodret rs!
+9800     methodend
+
+9810     REM /** 
+9820     REM  * retrieve Decrypted Passwords for all active employees.
+9830     REM  * Employees gonna be selected with the active status equals true and where the tenure start and end date are valid.
+9840     REM  * @return ResultSet with Employee IDs and Decrypted outlook Passwords for all employees records.  
+9850     REM  */
+9860     REM method public ResultSet retrieveDecryptedPasswords()
+9870     	REM CARIT-10334 Unencrypted Passwords in CarIT DB - Not CarIT Passwords
+9880     	REM Commenting whole method as we are using CryptoUtils.cs class in .net 
+9890     	REM REM CARIT-5531 Unencrypted Passwords in CarIT DB
+9900     	REM REM CARIT-10627 Add new custom method to EmployeesBC for decrypting the passwords
+9910         REM declare DataRow drTemp!
+9920         REM declare DataRow filter!
+9930     	REM declare ResultSet rsResult!
+9940         REM declare DataRow drReturn!
+9950     	REM declare ResultSet rsReturn!
+
+9960     	REM rsReturn! = new ResultSet()
+
+9970     	REM now$=date(0:"%Yl-%Mz-%Dz")
+9980         REM filter!=new DataRow()
+9990         REM filter!.setFieldValue("EM_ACTIVE_YN",1)
+10000         REM filter!.setFieldValue("EM_TEN_STA_DATE","cond:<="+now$)
+10010         REM filter!.setFieldValue("EM_TEN_END_DATE","cond:>="+now$+"|<"+now$)
+10020         REM #super!.setFilter(filter!)
+10030         REM #super!.setScope("")
+10040         REM rsResult!=#super!.retrieve()
+10050         REM if rsResult! <> null() and rsResult!.size() > 0 then
+10060 			REM for i=0 to rsResult!.size()-1
+10070 				REM drTemp! = rsResult!.get(i)	
+10080 				REM strEmployeeId$ = drTemp!.getFieldAsString("EMPLOYEE_ID",ERR=*next)
+10090 				REM strPassword$ = drTemp!.getFieldAsString("EM_PWD_OUTLOOK",ERR=*next)
+10100 				REM strPassword$ = cvs(strPassword$,3)
+10110 				REM if strPassword$ <> "" then
+10120 					REM strPassword$ = cryptoutils.decryptIfPossible(strPassword$)
+10130 				REM endif
+10140 				REM drReturn! = new DataRow()
+10150 				REM drReturn!.setFieldValue("EMPLOYEE_ID",strEmployeeId$)
+10160 				REM drReturn!.setFieldValue("EM_PWD_OUTLOOK",strPassword$)
+10170 				REM rsReturn!.addItem(drReturn!)
+10180 			REM next i
+10190         REM endif
+
+10200         REM methodret rsReturn!
+10210     REM methodend    
+
+10220     REM /** 
+10230     REM  * Keeps the employee's TMS data in cache as & when capacity gird is filed
+10240     REM  * @param BBjString strCompId!
+10250     REM  * @param BBjString strBranchId!
+10260     REM  * @param BBjString strWksd!
+10270     REM  * @param BBjNumber datStartDate!
+10280     REM  * @param BBjNumber datEndDate!
+10290     REM  * @return void 
+10300     REM  */ 
+10310     method public void cacheEmployeesTMSData(BBjString strCompId!,BBjString strBranchId!,BBjString strWksd!,BBjNumber datStartDate!,BBjNumber datEndDate!)
+10320         if #EnablePerfTrace then dtStartTime!=new Date()
+
+10330         strSql!="select JUL(YEAR(ED_DATE),MONTH(ED_DATE),DAYOFMONTH(ED_DATE)) AS ED_DATE_JUL, TMSEMPDAY.* from TMSEMPDAY where ED_DATE>=? and ED_DATE<=?"
+10340         params!=date(datStartDate!:"%Yl-%Mz-%Dz") +","+date(datEndDate!:"%Yl-%Mz-%Dz")
+10350         #rsTmsEmpDay!=TableBC.query(strSql!,params!)
+
+10360         rem Query takes too long (approx 1m on LDGB) whereas executed in 0.3sec if both ED_DATE & Employee_id is added to filter 
+10370         REM     strSql!="select JUL(YEAR(ED_DATE),MONTH(ED_DATE),DAYOFMONTH(ED_DATE)) AS ED_DATE_JUL,EDM_START_TIME,EDM_NOF_HOURS,trim(EMPLOYEE_ID) as EMPLOYEE_ID_NS from TMSEMPDAYMUT where ED_DATE>=? and ED_DATE<=?"
+10380         REM     params!=date(datStartDate!:"%Yl-%Mz-%Dz") +","+date(datEndDate!:"%Yl-%Mz-%Dz")
+10390         REM     #rsTmsEmpDayMut!=TableBC.query(strSql!,params!)
+
+10400         strSql!="select JUL(YEAR(EDS_DATE),MONTH(EDS_DATE),DAYOFMONTH(EDS_DATE)) AS EDS_DATE_JUL,TMSEMPDAYSCHE.* from TMSEMPDAYSCHE where EDS_DATE>=? and EDS_DATE<=?"
+10410         params!=date(datStartDate!:"%Yl-%Mz-%Dz") +","+date(datEndDate!:"%Yl-%Mz-%Dz")
+10420         #rsTmsEmpDaySche!=TableBC.query(strSql!,params!)
+
+10430         strSql!="select JUL(YEAR(TL_DATE),MONTH(TL_DATE),DAYOFMONTH(TL_DATE)) AS TL_DATE_JUL,TMSLOANHEA.* from TMSLOANHEA where COMP_ID=? and BRANCH_ID=? and WKS_ID=? and TL_DATE>=? and TL_DATE<=?"
+10440         params!=strCompId!+","+strBranchId!+","+strWksd!+","+date(datStartDate!:"%Yl-%Mz-%Dz") +","+date(datEndDate!:"%Yl-%Mz-%Dz")
+10450         #rsTmsLoanHea!=TableBC.query(strSql!,params!)
+
+10460         if #EnablePerfTrace then dtEndTime! = new Date()
+10470         if #EnablePerfTrace then #strLog$=#strLog$+"Overall cacheEmployeesTMSData: "+str((dtEndTime!.getTime()-dtStartTime!.getTime())/1000)+"s"
+
+10480     methodend
+
+10490     REM /** 
+10500     REM  * Returns the recordset with employeeID's and names having the given kind of functions and there time shcedules.
+10510     REM  * @param BBjString strKOF! Comma seperated string of Kind of functions. Example :"'   1','   3'" Will return all the employees with KOF Mechanic and Repionist planning.
+10520     REM  * @param BBjString strCompId!
+10530     REM  * @param BBjString strBranchId!
+10540     REM  * @param BBjString strWhs!
+10550     REM  * @param BBjString strWksd!
+10560     REM  * @param BBjString strSalId!
+10570     REM  * @param BBjNumber datScheduleDate!
+10580     REM  * @return ResultSet 
+10590     REM  */ 
+10600     method public ResultSet retrieveEmployeesSchedulesByKOF(BBjString strKOF!,BBjString strCompId!,BBjString strBranchId!,BBjString strWhs!,BBjString strWksd!,BBjString strSalId!,BBjNumber datScheduleDate!)
+
+10610     	declare BBjString strSql!
+10620     	declare BBjString strSchedule!
+10630     	declare BBjString strWh1!
+10640     	declare BBjString params!
+10650     	declare DataRow dr!
+10660     	declare DataRow drResult!
+10670     	declare ResultSet rs!
+10680     	declare ResultSet rsResult!
+10690     	declare ResultSet rsTemp!
+10700     	declare DataRow drTemp!
+10710     	declare Date dtStartTime!
+10720 		declare Date dtEndTime!
+
+10730     	declare HashMap hmRsEmp!
+
+10740     	if #EnablePerfTrace then dtStartTime!=new Date()
+10750     	dr!=datetimeutils.getDateWeekYearData(datScheduleDate!)
+10760     	week$=str(num(dr!.getFieldAsString("WEEK_NUMBER_WITHIN_YEAR")))
+10770     	strDay$=dr!.getFieldAsString("DAY")
+10780 	    strSql!=" SELECT DISTINCT E.EMPLOYEE_ID as ID, RTRIM(E.EM_FULL_NAME) AS EM_FULL_NAME"
+10790 	    strSql!=strSql!+",str(TDSD.DS_START_TIME,'0#:##')+'-'+str(TDSD.DS_END_TIME,'0#:##') as SCHEDULE "
+10800 	    strSql!=strSql!+",'3' AS SORT FROM EMPLOYEE as E"
+10810 	    strSql!=strSql!+" LEFT JOIN ARUEMPFUNCRGHT as AEFR on E.EMPLOYEE_ID=AEFR.EMPLOYEE_ID"
+10820 	    strSql!=strSql!+" LEFT JOIN TMSEMPFUNC as TEF on TEF.EM_FUNC_ID=AEFR.EM_FUNC_ID"
+10830 	    strSql!=strSql!+" LEFT JOIN TMSWEEKSCHEDET TWSD ON E.WEEK_SCHE_ID_"+week$+"= TWSD.WEEK_SCHE_ID"
+10840 	    strSql!=strSql!+" LEFT JOIN TMSDAYSCHEDET TDSD ON TWSD.DAY_SCHE_ID_"+strDay$+"= TDSD.DAY_SCHE_ID"
+10850 	    strSql!=strSql!+" LEFT JOIN SYSDELTABLE SDT ON SDT.PRIM_KEY=E.EMPLOYEE_ID AND SDT.TABLE='EMPLOYEE'"
+10860 	    strSql!=strSql!+" WHERE E.EM_ACTIVE_YN=1 AND SDT.PRIM_KEY is null "
+10870 	    strSql!=strSql!+" AND E.EM_TEN_STA_DATE<=? and (E.EM_TEN_END_DATE>? or E.EM_TEN_END_DATE is null)"
+10880 	    params!=date(datScheduleDate!,"%Yl-%Mz-%Dz")+","+date(datScheduleDate!,"%Yl-%Mz-%Dz")
+
+10890 	    if strKOF!.contains(",") then
+10900 			strWh1!=" AND TEF.EM_FUNC_KOF IN ("+strKOF!+")"
+10910 	    else
+10920 	    	strWh1!=" AND TEF.EM_FUNC_KOF="+strKOF!
+10930 	    endif
+10940 	    strSql!=strSql!+strWh1!
+10950 	    if strCompId!<>"" then
+10960 	    	strSql!=strSql!+" AND AEFR.COMP_ID='"+strCompId!+"'"
+10970 	    endif
+10980 	    if strBranchId!<>"" then
+10990 	    	strSql!=strSql!+" AND AEFR.BRANCH_ID='"+strBranchId!+"'"
+11000 	    endif
+11010 	    if strWhs!<>"" then
+11020 	    	strSql!=strSql!+" AND AEFR.WHS_ID='"+strWhs!+"'"
+11030 	    endif
+11040 	    if strWksd!<>"" then
+11050 	    	strSql!=strSql!+" AND AEFR.WKS_ID='"+strWksd!+"'"
+11060 	    endif
+11070 	    if strSalId!<>"" then
+11080 	    	strSql!=strSql!+" AND AEFR.SAL_ID='"+strSalId!+"'"
+11090 	    endif
+11100 	    strSql!=strSql!+" ORDER BY EM_MATCHCODE"
+11110 	    rs!=TableBC.query(strSql!,params!)
+
+11120         if #EnablePerfTrace then dtEndTime! = new Date()
+11130         if #EnablePerfTrace then #strLog$=#strLog$+" SQL:"+strSql!+" -> Emp main query ExecutionTime: "+str((dtEndTime!.getTime()-dtStartTime!.getTime())/1000)+"s"
+
+11140         if rs!.size()>0 then
+11150             rem prepre rsRowIndex=>emp_id map.
+11160             hmRsEmp!= new HashMap()
+11170             for i=0 to rs!.size()-1
+11180                 hmRsEmp!.put(rs!.get(i).getFieldAsString("ID").trim(),i)
+11190                 if rs!.get(i).getFieldAsString("SCHEDULE")="0 :  -0 :  " then
+11200                 	rs!.get(i).setFieldValue("SCHEDULE","")
+11210                 	rs!.get(i).setFieldValue("SORT","1")
+11220                 endif
+11230             next i
+11240             rem check employee for absence
+11250             dtStartTime!=new Date()
+11260             rem print "testoms caching";escape
+11270             if #rsTmsEmpDay!<>null() then
+11280                 rsTemp!=#rsTmsEmpDay!.filterBy("ED_DATE_JUL="+str(datScheduleDate!))
+11290                 if rsTemp!.size()>0 then
+11300                     for i=0 to rsTemp!.size()-1
+11310                         drtemp!=rsTemp!.get(i)
+11320                         rem CARIT-8500 Complains about the performance with the new workshop planning Part-2
+11330                         rem When there were more employees (45 on LDG-LEC) the IN query on TMSENPDAY to find employee absences was taking 2s
+11340                         rem Removed IN clause from query & introduced HashMap to check employee from list.
+11350                         if hmRsEmp!.containsKey(drtemp!.getFieldAsString("EMPLOYEE_ID").trim()) then
+11360                             if drtemp!.getFieldAsNumber("ED_EXP_PRES_TIME")=drtemp!.getFieldAsNumber("ED_NOT_PRES_TIME") then
+11370                                 numRsRow=cast(BBjNumber,hmRsEmp!.get(drtemp!.getFieldAsString("EMPLOYEE_ID").toString().trim()))
+11380                                 rs!.get(numRsRow).setFieldValue("SCHEDULE","")
+11390                                 rs!.get(numRsRow).setFieldValue("SORT","1")
+11400                             else
+11410                                 strSql!="select EDM_START_TIME,EDM_NOF_HOURS from TMSEMPDAYMUT where ED_DATE=? and EMPLOYEE_ID =?"
+11420                                 params!=date(datScheduleDate!,"%Yl-%Mz-%Dz")+","+drtemp!.getFieldAsString("EMPLOYEE_ID")
+11430                                 rsResult!=TableBC.query(strSql!,params!)
+11440                                 rem rsResult!=#rsTmsEmpDayMut!.filterBy("ED_DATE_JUL="+str(datScheduleDate!)).filterBy("EMPLOYEE_ID_NS=")+drtemp!.getFieldAsString("EMPLOYEE_ID")
+11450                             	if rsResult!.size()>0 then
+11460         							drResult!=rsResult!.get(0)
+11470         							numRsRow=cast(BBjNumber,hmRsEmp!.get(drtemp!.getFieldAsString("EMPLOYEE_ID").toString().trim()))
+11480         							strSchedule!=rs!.get(numRsRow).getFieldAsString("SCHEDULE")
+11490         							rem CARIT-8451 wpsplancenterfhd ends in loop by clicking on date
+11500                                     if strSchedule!.trim()<>"" then
+11510                                         numStartTime2=datetimeutils.addHoursToTime(drResult!.getFieldAsNumber("EDM_START_TIME"),drResult!.getFieldAsNumber("EDM_NOF_HOURS"))
+11520 										if numStartTime2=num(strSchedule!.substring(6).replace(":","")) then
+11530                                             rs!.get(numRsRow).setFieldValue("SCHEDULE",strSchedule!.substring(0,5)+"-"+str(drResult!.getFieldAsNumber("EDM_START_TIME"),"0#:##"))
+11540                                         else
+11550                                             rs!.get(numRsRow).setFieldValue("SCHEDULE",strSchedule!.substring(0,5)+"-"+str(drResult!.getFieldAsNumber("EDM_START_TIME"),"0#:##")+"/"+str(numStartTime2,"0#:##")+"-"+strSchedule!.substring(6))
+11560                                         endif
+11570                                     endif
+11580         							rs!.get(numRsRow).setFieldValue("SORT","2")
+11590         						endif
+11600                             endif
+11610                         endif
+11620                     next i
+11630                 endif
+11640             endif
+11650             if #EnablePerfTrace then dtEndTime! = new Date()
+11660             if #EnablePerfTrace then #strLog$=#strLog$+" SQL:"+strSql!+" -> Emp Absence ExecutionTime: "+str((dtEndTime!.getTime()-dtStartTime!.getTime())/1000)+"s"
+
+11670             rem check employee for deviation
+11680             if #EnablePerfTrace then dtStartTime!=new Date()
+11690             if #rsTmsEmpDaySche!<>null() then
+11700                 rsTemp!=#rsTmsEmpDaySche!.filterBy("EDS_DATE_JUL="+str(datScheduleDate!))
+11710                 if rsTemp!.size()>0 then
+11720                     i=0
+11730                     for i=0 to rsTemp!.size()-1
+11740                         drtemp!=rsTemp!.get(i)
+11750                         if hmRsEmp!.containsKey(drtemp!.getFieldAsString("EMPLOYEE_ID").trim()) then
+11760                             numRsRow=cast(BBjNumber,hmRsEmp!.get(drtemp!.getFieldAsString("EMPLOYEE_ID").toString().trim()))
+11770                             rs!.get(numRsRow).setFieldValue("SCHEDULE",str(drtemp!.getFieldAsNumber("EDS_START_TIME"),"0#:##")+"-"+str(drtemp!.getFieldAsNumber("EDS_END_TIME"),"0#:##"))
+11780                             rs!.get(numRsRow).setFieldValue("SORT","3")
+11790                         endif
+11800                     next i
+11810                 endif
+11820             endif
+11830             if #EnablePerfTrace then dtEndTime! = new Date()
+11840             if #EnablePerfTrace then #strLog$=#strLog$+" SQL:"+strSql!+" -> Emp deviation ExecutionTime: "+str((dtEndTime!.getTime()-dtStartTime!.getTime())/1000)+"s"
+
+11850             rem check loaned employee
+11860             if #EnablePerfTrace then dtStartTime!=new Date()
+11870             if #rsTmsLoanHea!<>null() then
+11880                 rsTemp!=#rsTmsLoanHea!.filterBy("TL_DATE_JUL="+str(datScheduleDate!))
+11890                 if rsTemp!.size()>0 then
+11900                     i=0
+11910                     for i=0 to rsTemp!.size()-1
+11920                         drtemp!=rsTemp!.get(i)
+11930                         if hmRsEmp!.containsKey(drtemp!.getFieldAsString("EMPLOYEE_ID").trim()) then
+11940                             if drtemp!.getFieldAsNumber("TL_WKS_IND")=0 and drtemp!.getFieldAsNumber("TL_NOF_HOURS")=0 then
+11950                               numRsRow=cast(BBjNumber,hmRsEmp!.get(drtemp!.getFieldAsString("EMPLOYEE_ID").toString().trim()))
+11960                               rs!.get(numRsRow).setFieldValue("SCHEDULE","")
+11970                               rs!.get(numRsRow).setFieldValue("SORT","1")
+11980                             else
+11990                                 if drtemp!.getFieldAsNumber("TL_WKS_IND")=1 and drtemp!.getFieldAsNumber("TL_NOF_HOURS")>0 then
+12000                                     rem add employee to result
+12010                                 endif
+12020                             endif
+12030                         endif
+12040                     next i
+12050                   if #EnablePerfTrace then dtEndTime! = new Date()
+12060                   if #EnablePerfTrace then #strLog$=#strLog$+" SQL:"+strSql!+" -> Emp loaned ExecutionTime: "+str((dtEndTime!.getTime()-dtStartTime!.getTime())/1000)+"s"
+12070                 endif
+12080             endif
+12090         endif
+12100         if rs!.size()>0 and rs!<>null() then
+12110             rs!.orderByColumn("SORT","ASC")
+12120         endif
+12130 	    methodret rs!
+12140     methodend
+12150     rem /**
+12160     rem  * Method getEmployeeDefault: 
+12170     rem  * to get employee's default values
+12180     rem  */
+12190     method public BBjString getEmployeeDefault(BBjString strEmpId$,BBjString strItemNr$,BBjString strFormNr$,BBjString strDefAttrID$)
+12200         declare ResultSet rs!
+12210         declare BBjString strDefVal!
+12220         sql$="select DEF_VALUE from DFUEMPDEFAULT  WHERE EMPLOYEE_ID = ? AND   ITEMNR = ? AND   FORMNR = ? AND   DEF_ATTR_ID = ?"
+12230         strParam$=strEmpId$+","+ strItemNr$+","+ strFormNr$+","+ strDefAttrID$
+12240         rs!=#super!.query(sql$,strParam$)
+12250         if rs!.size() then
+12260             strDefVal!=rs!.get(0,err=*next).getFieldAsString("DEF_VALUE",err=*next)
+12270         endif
+12280         methodret strDefVal!
+12290     methodend
+
+12300 	REM /**
+12310 	REM  * get the email address of an employee from various tables / sources
+12320 	REM  * @PARAM BBjString EMPLOYEE_ID
+12330 	REM  * @RETURN BBjString EMail address
+12340 	REM  */
+12350 	method public BBjString getEmployeeEmailAddress(BBjString EMPLOYEE_ID$)
+12360 		declare ResultSet rs!
+12370 		declare DataRow dr!
+12380 		EMPLOYEE_ID$=#super!.ensureFormat(EMPLOYEE_ID$,12)
+12390 		sql$ = "SELECT e.EM_EMAIL_BUS, c.CU_EMAIL "
+12400 		sql$ = sql$ + "FROM [EMPLOYEE] AS e "
+12410 		sql$ = sql$ + "LEFT JOIN [CUSTOMER] AS c ON c.EMPLOYEE_ID=e.EMPLOYEE_ID "
+12420 		sql$ = sql$ + "WHERE e.EMPLOYEE_ID='"+EMPLOYEE_ID$+"'"
+12430 		rs!=#super!.query(sql$)
+12440 		if rs!.size()
+12450 			dr!=rs!.get(0)
+12460 			email$=cvs(dr!.getFieldAsString("EM_EMAIL_BUS"),3)
+12470 			if email$=""
+12480 				email$=cvs(dr!.getFieldAsString("CU_EMAIL"),3)
+12490 			fi
+12500 		fi
+12510 		methodret email$
+12520 	methodend
+
+
+12530 	REM /**
+12540 	REM  * get the full name of the employee
+12550 	REM  * @PARAM BBjString EMPLOYEE_ID
+12560 	REM  * @RETURN BBjString full name
+12570 	REM  */
+12580 	method public BBjString getEmployeeFullName(BBjString EMPLOYEE_ID$)
+12590 		declare ResultSet rs!
+12600 		declare DataRow dr!
+12610 		EMPLOYEE_ID$=#super!.ensureFormat(EMPLOYEE_ID$,12)
+12620 		sql$ = "SELECT e.EM_FULL_NAME, u.FULL_NAME "
+12630 		sql$ = sql$ + "FROM [EMPLOYEE] AS e "
+12640 		sql$ = sql$ + "INNER JOIN [USER] AS u ON u.USERID=e.USERID "
+12650 		sql$ = sql$ + "WHERE e.EMPLOYEE_ID='"+EMPLOYEE_ID$+"'"
+12660 		rs!=#super!.query(sql$)
+12670 		if rs!.size()
+12680 			dr!=rs!.get(0)
+12690 			fullName$=cvs(dr!.getFieldAsString("EM_FULL_NAME"),3)
+12700 			if fullName$=""
+12710 				fullName$=cvs(dr!.getFieldAsString("FULL_NAME"),3)
+12720 			fi
+12730 		fi
+12740 		methodret fullName$
+12750 	methodend
+
+12760 	REM /**
+12770     REM  * retrieve all active employees.
+12780     REM  * Employees gonna be selected which are available in SYSACTIVEJOB table.
+12790     REM  * @return ResultSet with all active employees records.  
+12800     REM  */
+12810     method public static ResultSet retrieveLoggedInEmployees()
+
+12820         declare TableBC tbc!
+12830         declare ResultSet rs!
+12840         tbc!=new TableBC()
+
+12850         sql!="select * from EMPLOYEE inner join (select USERID from SYSACTIVEJOB group by USERID) sysactjob on sysactjob.USERID=USERID and EM_ACTIVE_YN=1"
+12860 		rs! = tbc!.query(sql!)
+12870         methodret rs!
+12880     methodend
+12890 classend
+
+
+12900 REM /**
+12910 REM  * ------------------------------------------ demo ----------------------------------------
+12920 REM  */
+
+12930 void$=stbl("USERID","0011")
+12940 declare EmployeesBC bc!
+12950 declare DataRow dr!
+12960 bc! = new EmployeesBC()
+12970 ?bc!.retrieveDecryptedPasswords().get(1)
+12980 escape
+12990 REM /**
+13000 REM  * retrieve simply all from buffer
+13010 REM  */
+13020 s1=System.currentTimeMillis()
+13030 rs!=EmployeesBC.retrieveAllActiveEmployees()
+13040 s2=System.currentTimeMillis()
+13050 ?str(rs!)+" took "+str(s2-s1)+"x millis"
+13060 escape
+
+13070 REM /**
+13080 REM  * 
+13090 REM  */
+13100 REM ?EmployeesBC.getCharacteristicSqlFields("e")
+13110 REM bc!.setScope("E")
+13120 drFilter! = new DataRow()
+13130 drFilter!.setFieldValue("EMPLOYEE_ID","          26")
+13140 rem drFilter!.setFieldValue("COMP_ID","111")
+13150 rem drFilter!.setFieldValue("BRANCH_ID","111")
+13160 bc!.setFilter(drFilter!)
+13170 rs!=bc!.retrieve()
+13180 ?str(rs!.get(0))
+13190 escape
+
+13200 isAdmin=EmployeesBC.isAdmin()
+13210 ?isAdmin
+
+13220 dr!=bc!.getAttributesRecord()
+
+13230 declare DataRow drFilter!
+13240 declare ResultSet rs!
+
+13250 bc!.setScope("EU")
+13260 REM dr!=DataRow.fromURL("CLASSID=0000")
+13270 REM bc!.setFilter(dr!)
+13280 rs!=bc!.retrieve()
+13290 ?str(rs!.get(0))
+13300 ?bc!.getScopeAttributesRecord(DataRow.fromURL("USR_COMP_ID=&USR_BRANCH_ID=&USR_SAL_ID=&USR_WHS_ID=&USR_WKS_ID="))
+
+
+
+13310 bc!.setScope("")
+13320 rs!=bc!.retrieve()
+13330 ?rs!.get(0)
+
+13340 escape; REM FIN
+
+13350 REM Branch name: release/V23/pilot/CarITDMS23_Hotfix20240312_pilot Timestamp: 2024-03-13T14:15:00+01:00 CI Pipeline ID: 15991
